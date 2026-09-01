@@ -178,6 +178,7 @@ function pick(set) { return set[randomBelow(set.length)]; }
 function generateApplePassword() {
   const C = 'bcdfghjkmnpqrstvwxz';
   const V = 'aeiouy';
+  const separator = '!';
   const groups = [];
   for (let g = 0; g < 3; g++) groups.push([pick(C), pick(V), pick(C), pick(C), pick(V), pick(C)]);
   const slots = [[0,5],[1,0],[1,5],[2,0],[2,5]];
@@ -186,7 +187,7 @@ function generateApplePassword() {
   let ug, up;
   do { ug = randomBelow(3); up = randomBelow(6); } while (ug === dg && up === dp);
   groups[ug][up] = groups[ug][up].toUpperCase();
-  return groups.map((g) => g.join('')).join('-');
+  return groups.map((g) => g.join('')).join(separator);
 }
 
 function generateAlphanumeric(len = 15) {

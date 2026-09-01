@@ -73,6 +73,9 @@ test('smart signup keeps alias discovery in the extension and requires a chooser
   );
   assert.match(inline, /send\('smart-signup'/);
   assert.match(inline, /send\('use-apple-sign-in'/);
+  assert.match(inline, /const separator = '!'/);
+  assert.match(inline, /\.join\(separator\)/);
+  assert.doesNotMatch(inline, /\.join\('-'\)/);
 });
 
 test('saved logins suppress signup extras and standalone inline Hide My Email is removed', () => {

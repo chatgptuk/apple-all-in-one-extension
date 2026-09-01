@@ -2,111 +2,78 @@
   <strong>English</strong> · <a href="./README.zh-CN.md">简体中文</a>
 </p>
 
-> **v1.2.6.1:** TypeScript hotfix for the automatic Apple Passwords connection flow. The popup state variable is explicitly typed as the full PasswordState union so a valid `unlocked` response from the native helper no longer fails typecheck/build.
+# Apple All-In-One
 
-> **v1.2.6:** Toolbar startup is isolated behind a small bootstrap that repairs global/per-tab action state, while opening the popup can automatically begin the Apple Passwords access-code flow.
+An independent, open-source Chromium extension that brings Apple Passwords, passkeys, verification codes, and iCloud+ Hide My Email into one interface.
 
-# Apple All-In-One v1.2.20
+> [!IMPORTANT]
+> **This is currently a macOS/Chromium sideloading project, not a Chrome Web Store-ready product.** The Apple Passwords integration retains the public manifest key used by Apple's own extension so that macOS's fixed native-helper allowlist recognizes it. This produces the same extension ID, means the official Apple extension cannot be enabled at the same time, and does not grant permission to publish or impersonate Apple's extension.
 
-**Apple All-In-One** is an independent Chromium extension that brings several Apple account features into one place: Apple Passwords, passkeys, verification codes, and iCloud+ Hide My Email.
+This project is not endorsed by, sponsored by, authorized by, or affiliated with Apple Inc. Apple, iCloud, iCloud+, Apple Passwords, and related names are Apple trademarks used here only to describe compatibility and the services being accessed.
 
-It combines the user-tested **Open Passwords** codebase with the redesigned **Hide My Email** codebase while preserving separate security boundaries for native password access and iCloud web services.
+**Current version:** 1.2.20<br>
+**Repository:** https://github.com/chatgptuk/apple-all-in-one-extension
 
-> Independent open-source project. Not endorsed by, sponsored by, or affiliated with Apple Inc. Apple, iCloud, iCloud+, and related product names are trademarks of Apple Inc.
+## Who this project is for
 
-**Project repository:** https://github.com/chatgptuk/apple-all-in-one-extension
+Apple All-In-One is suitable for technically experienced users who:
 
-## Project origins / upstream projects
+- use a Chromium-based browser on macOS;
+- already store credentials and verification codes in Apple Passwords;
+- use iCloud+ Hide My Email;
+- are comfortable building and loading an unpacked extension; and
+- understand that undocumented Apple interfaces can change without notice.
 
-Apple All-In-One is primarily derived from two open-source projects:
+It is not currently suitable for Chrome Web Store submission, managed enterprise deployment, or distribution as an Apple-approved product.
 
-1. **Open Passwords** — https://github.com/ManiForoughi2/open-passwords
-   Provides the Apple Passwords integration layer, including macOS native messaging, SRP/AES-GCM session handling, password lookup and save flows, passkey-related components, OTP-field exclusion, and the secure inline credential chooser. Apple All-In-One adds stored verification-code discovery, on-demand code retrieval, suggestions, and origin-checked filling; those OTP-management features are not supplied by Open Passwords. This project retains the relevant Apache-2.0 notices and upstream attribution.
+## Features
 
-2. **iCloud Hide My Email Browser Extension** — https://github.com/dedoussis/icloud-hide-my-email-browser-extension
-   Provides the original browser-extension foundation and private iCloud Hide My Email API integration. Apple All-In-One extends it with the redesigned alias manager, explicit create/use flow, website identity and favicon display, recent iCloud Mail activity, direct delete, and bulk management. The original MIT license and copyright notice are retained.
+### Apple Passwords
 
-See `LICENSES/`, `THIRD_PARTY_NOTICES.md`, and `OPEN_PASSWORDS_NOTICE` for licensing details.
+- Connects to the macOS `com.apple.passwordmanager` native helper.
+- Uses the Open Passwords SRP/AES-GCM protocol for encrypted credential queries.
+- Finds, fills, saves, and updates passwords.
+- Prioritizes credentials whose saved site exactly matches the current hostname, then shows related-domain matches.
+- Supports passkey bridging and optional suppression of silent conditional-passkey suggestions.
+- Shows saved verification-code entries and fills codes with origin/frame checks.
+- Keeps decrypted secrets in extension memory only and clears them when the native session ends.
 
-## Included features
+Clicking a saved login fills the current page and expands its details in the popup. The password remains masked until explicitly revealed. If the account has a verification code, **Show Code** is a separate action because macOS can require a separate Touch ID authorization for that native read. Clicking a standalone verification-code entry fills the page and expands the code details from the same authorized read, without requesting Touch ID twice for that action.
 
-- Apple Passwords through the macOS `com.apple.passwordmanager` native helper.
-- SRP session establishment and encrypted credential reads/writes.
-- Password filling and password-save/update flows.
-- Apple Passwords verification-code discovery, on-demand retrieval, chooser/popup suggestions, and secure filling implemented by Apple All-In-One.
-- OTP-field exclusion, the passkey bridge, and optional conditional-passkey suppression retained from Open Passwords.
-- iCloud+ Hide My Email address generation, reserve and form filling.
-- Alias search and management.
-- Direct deletion of active aliases (`deactivate → delete` automatically).
-- Multi-select bulk deactivate and bulk delete with sequential execution.
-- Website/domain identification and favicon display for aliases.
-- Recent iCloud Mail activity (`Last received …`) with a 24-hour automatic cache and bounded Inbox scan. Manual refresh still forces an immediate scan.
-- User-triggered recent-mail previews for each Hide My Email address, including local verification-code detection and one-click copy. Message previews are kept in popup memory only and are not written to extension storage.
-- One secure inline chooser for saved credentials, verification codes, and optional Hide My Email creation.
-- Smart Signup in the isolated inline chooser: detect Sign in with Apple, reuse an active alias already associated with the website, or explicitly create a private address and prepare a strong password in one action.
-- Apple-style popup, settings, guide, and code-drawn cloud/keyhole application icon.
-- English and Simplified Chinese UI. Default language follows the browser; Settings can override it with Chinese or English.
-- Lazy startup: installation and browser startup do not validate iCloud or connect to the Apple Passwords native helper. Those services initialize only when their feature is actually used.
-- Popup background-message retry for short MV3 service-worker wake-up races.
+### iCloud+ Hide My Email
 
-## Startup behavior
+- Creates, reserves, fills, searches, activates, deactivates, and deletes private addresses.
+- Reuses the address list from a two-minute session cache; stale data is shown immediately while a silent refresh runs.
+- Supports direct deletion of active aliases by performing `deactivate → delete`.
+- Supports multi-select bulk deactivate/delete with retryable partial failures.
+- Identifies associated websites and displays Chromium-resolved favicons with deterministic fallbacks.
+- Caches the last-received timestamp for 24 hours and allows a manual refresh.
+- Reads recent iCloud Mail previews only after the user clicks **Check**. Preview content stays in popup memory and is discarded when the popup closes.
+- Detects likely 4–8 digit verification codes locally in recent message subjects/previews.
 
-Apple All-In-One intentionally keeps installation and browser startup lightweight:
+Hide My Email uses the browser's existing signed-in iCloud.com session. The extension never asks for the Apple Account password and does not share Apple Passwords native-session keys with the iCloud subsystem.
 
-- `onInstalled` does not validate the iCloud web session.
-- `onInstalled` / `onStartup` do not open the Apple Passwords native connection.
-- The toolbar action is kept globally enabled without per-tab `setPopup` or enable/disable state.
-- Apple Passwords connects to `com.apple.passwordmanager` only when Passwords is actually requested.
-- Hide My Email validates/discovers the iCloud session only when Hide My Email is opened or an HME action is explicitly used.
-- **Automatically Reconnect Hide My Email** is on by default. Opening Hide My Email or detecting an expired cached session triggers one bounded re-check of the browser's existing trusted iCloud web session. If Apple requires fresh authentication, the extension stops and shows an iCloud.com sign-in action; the behavior can be disabled in Settings.
-- Popup messages retry briefly when Chromium is still waking the MV3 service worker.
+### Inline chooser and signup tools
 
-This is intended to avoid the post-install period where the toolbar icon appeared responsive only from extension pages.
+- Displays exact-site saved logins first.
+- When a site already has saved logins, hides unrelated signup suggestions.
+- When no saved login exists, **Private Signup** can reuse or explicitly create a Hide My Email address and prepare a strong password.
+- Can activate a detected Sign in with Apple control only after the user explicitly chooses it.
+- Keeps Hide My Email creation available from the editable-field context menu instead of duplicating it in every chooser.
 
-## Language
+No private address is created merely because an email field receives focus. The user must choose **Create Private Address**, review the candidate, and then choose **Use**.
 
-The extension ships with English and Simplified Chinese UI.
+## Requirements and installation
 
-- Default: **Follow Browser** (`chrome.i18n.getUILanguage()`).
-- Manual choices: **中文** or **English** in Settings → General → Language.
-- Popup, Settings, Setup Guide, secure inline chooser, HME context-menu copy, and notifications use the selected language.
-- The manifest also includes Chrome `_locales` metadata so the extension description follows the browser language.
+### Requirements
 
-## Important interaction behavior
+- macOS 15.4 or newer for the Apple Passwords native-helper integration
+- a Chromium-based browser
+- Node.js 20 or newer
+- an active iCloud+ subscription for Hide My Email
+- an authenticated iCloud.com browser session for Hide My Email and recent-mail features
 
-Focusing an email field **does not generate a Hide My Email address**.
-
-The flow is intentionally explicit:
-
-1. Focus an eligible email/login field.
-2. Choose **Create Private Address**.
-3. The extension requests a candidate HME address.
-4. Choose **Use** to reserve it and fill the field.
-
-This prevents unused aliases from being created simply because a page contains an email input.
-
-On a registration form, **Smart Signup** adds two explicit alternatives when available:
-
-- **Continue with Apple** activates the website's detected Sign in with Apple control.
-- **Private Signup** reuses an active alias already associated with the website, or creates and reserves a new alias, then prepares a strong password. If the password field is already visible it is filled immediately; otherwise the same generated password is offered on the next password step.
-
-No alias is created and no website control is activated until the user chooses one of these actions in the extension-origin chooser.
-
-## Install / upgrade from Open Passwords
-
-Apple All-In-One intentionally preserves the Open Passwords manifest `key`, so Chromium generates the same extension ID expected by the existing native-policy helper.
-
-1. Install dependencies and build the project.
-2. Open `chrome://extensions`.
-3. Remove or unload the previous unpacked Open Passwords build; Chromium cannot load two unpacked extensions with the same fixed ID.
-4. Load the generated `build/` directory.
-5. If Open Passwords already worked on this browser, the existing native helper configuration should continue to match the preserved extension ID.
-6. If the helper has never been installed, run `native/install.sh`, fully quit Chrome, and reopen it.
-7. Disable/remove the old standalone Hide My Email extension after confirming the unified extension works.
-
-## Build
-
-Requires Node.js 20 or newer.
+### Build and load
 
 ```bash
 npm install
@@ -114,7 +81,14 @@ npm run typecheck
 npm run build
 ```
 
-Then load `build/` as an unpacked extension from `chrome://extensions`.
+Then:
+
+1. Open `chrome://extensions`.
+2. Enable **Developer mode**.
+3. Remove or disable the official Apple Passwords extension and any previously loaded Open Passwords build. Chromium cannot load two extensions with the same fixed ID.
+4. Choose **Load unpacked** and select this repository's `build/` directory.
+5. If the native helper has not been configured before, run `native/install.sh`, quit Chrome completely, and reopen it.
+6. After the unified extension works, disable the old standalone Hide My Email extension to avoid duplicate menus and requests.
 
 Development watch mode:
 
@@ -122,132 +96,101 @@ Development watch mode:
 npm run watch
 ```
 
-The dependency set intentionally avoids `webpack-dev-server`, `sockjs`, and the deprecated `uuid@8` dependency chain that caused previous npm audit warnings.
+## Startup and session behavior
 
-## Apple Passwords security model
+- Browser startup does not validate iCloud or start the Apple Passwords connection.
+- Each subsystem initializes only when the corresponding feature is opened or used.
+- The popup briefly retries background messages while Chromium wakes its Manifest V3 service worker.
+- The Apple Passwords six-digit pairing code belongs to the current native session. A keep-alive alarm can reduce service-worker interruptions, but it cannot guarantee that a real browser/native-session restart will remain unlocked.
+- Hide My Email can automatically re-check the existing trusted iCloud browser session. If Apple requires authentication or 2FA, the extension stops and sends the user to iCloud.com; it does not attempt to bypass that requirement.
 
-The Passwords subsystem keeps the Open Passwords architecture:
+## Language
+
+The popup, Settings, setup guide, inline chooser, context-menu copy, notifications, and manifest description support English and Simplified Chinese.
+
+- Default: **Follow Browser** (`chrome.i18n.getUILanguage()`).
+- The globe button in the main popup switches language immediately.
+- The same preference is available in **Settings → General → Language**.
+
+## Security and privacy model
+
+### Passwords boundary
 
 - Native connection: `com.apple.passwordmanager`
-- SRP handshake using the macOS six-digit challenge
-- AES-GCM protected native query channel
-- Decrypted password cache held in service-worker memory only and cleared on session lock/state loss
-- Privileged popup/background message validation
-- Frame/origin checks for credential fills
+- SRP challenge followed by an AES-GCM protected query channel
+- privileged popup/background message validation
+- frame and origin checks before filling
+- plaintext credential/cache lifetime limited to extension memory and native-session state
 
-The fixed extension identity is preserved because the macOS native helper/policy authorization depends on it.
+### iCloud boundary
 
-## Hide My Email security model
+- uses the browser's existing iCloud.com cookies/session rather than collecting an Apple Account password;
+- does not receive password-native-session keys or decrypted Apple Passwords values;
+- scans a bounded set of recent Inbox threads only—Spam, Junk, Trash, and deleted mail are not scanned;
+- persists historical last-received timestamps, but not message bodies, subjects, previews, or detected codes.
 
-Hide My Email does **not** receive the Apple Passwords native session keys or decrypted password values.
+These boundaries reduce data exposure, but they do not turn undocumented Apple protocols into supported public APIs.
 
-It uses the already-authenticated iCloud.com browser session for private iCloud web-service calls. The extension does not ask the user to type their Apple Account password into the extension.
+## Upstream projects and project-owned work
 
-Apple All-In-One does not attempt to read an Apple Account password from Keychain and silently recreate an iCloud web login. Apple Passwords native access provides credential operations, not a supported resumable iCloud web-auth session; iCloud sign-in may also require Apple authentication/2FA/trust state.
+Apple All-In-One combines two independently licensed upstream projects:
 
-Mail activity scans recent `INBOX` threads only. Spam/Junk/Trash are not scanned. Cached historical last-received timestamps remain available even when a previously matched email is later moved or deleted.
+1. [Open Passwords](https://github.com/ManiForoughi2/open-passwords) provides the native Apple Passwords integration, encrypted protocol implementation, credential flows, passkey components, OTP-field exclusion, and the original secure inline chooser. Stored verification-code discovery, on-demand retrieval, popup/chooser suggestions, and verified filling are implemented by Apple All-In-One rather than supplied by upstream Open Passwords.
+2. [iCloud Hide My Email Browser Extension](https://github.com/dedoussis/icloud-hide-my-email-browser-extension) provides the original extension foundation and private Hide My Email web-service integration. The redesigned manager, cache behavior, website identity, recent-mail activity/previews, direct deletion, bulk management, Smart Signup, and unified interface are later project work.
 
-Opening an address does not read message previews. The **Check** button performs a bounded, user-triggered Inbox scan and keeps the resulting sender, subject, short preview, and locally detected verification code in popup memory only. Closing the popup discards that list; only the existing historical `Last received` timestamp cache is persisted.
+## License
 
-Recent mail activity is available only when Hide My Email forwards to iCloud Mail (`@icloud.com`, `@me.com`, or `@mac.com`).
+This repository is a **multi-license distribution**:
 
-## Hide My Email management
+- original code and modifications first authored for Apple All-In-One: **Apache License 2.0**;
+- Open Passwords-derived code: **Apache License 2.0**, with its NOTICE and attribution retained;
+- iCloud Hide My Email Browser Extension-derived code: **MIT License**, with the original copyright and permission notice retained.
 
-The address manager supports:
+Redistributors must comply with every license that applies to the files they copy. Start with the [licensing map](./LICENSING.md), then retain:
 
-- Search by label, alias, note, or detected website.
-- Copy address.
-- Activate / deactivate.
-- Direct delete of an active alias by automatically performing `deactivate → delete`.
-- Multi-select mode.
-- Bulk deactivate.
-- Bulk delete.
-- Partial-failure handling: failed addresses remain selected for retry.
-- Website favicons when Chrome can resolve them, with safe fallbacks.
-- Cached recent mail activity.
-- On-demand recent messages with local verification-code copy and a direct iCloud Mail link.
+- [Apache-2.0 text](./LICENSE)
+- [Hide My Email MIT text](./LICENSES/Hide-My-Email-MIT.txt)
+- [Open Passwords NOTICE](./OPEN_PASSWORDS_NOTICE)
+- [Third-party notices](./THIRD_PARTY_NOTICES.md)
 
-## Browser notes
+The open-source licenses cover repository code only. They do **not** grant rights to Apple's trademarks, icons, software, native helper, services, accounts, APIs, extension identity, patents, or distribution channels.
 
-Apple Passwords native-helper integration is designed for Chromium browsers on macOS. The Hide My Email portion can also be built for Firefox, but the Apple Passwords native-helper behavior is Chromium/macOS-specific.
+## Trademark, platform, and distribution risk
 
-## Licenses
+The current repository is useful for source study and personal sideloading, but several issues should be resolved before any public or commercial distribution:
 
-This repository contains code under more than one license.
+| Area                                | Current assessment           | Why it matters                                                                                                                                                                                                                                                                        |
+| ----------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Upstream source licenses            | Manageable                   | Apache-2.0 and MIT both permit modification and redistribution when their license, attribution, and notice obligations are retained. A file-level provenance/modification-notice audit is still recommended before a formal release.                                                  |
+| Product name                        | High risk for public release | Apple's published trademark guidelines say an Apple word mark should not be part of a third-party product or service name. The current name should therefore be treated as a development name and replaced with a neutral brand before public distribution.                           |
+| Icon and visual identity            | Medium to high               | A custom icon still needs to be clearly distinct from Apple-owned icons and trade dress. A public build should use an independently branded icon and less Apple-like presentation.                                                                                                    |
+| Fixed manifest key and extension ID | High                         | The key deliberately reproduces the ID accepted by Apple's native helper. Open Passwords itself documents this as a personal unpacked-extension workaround and says it cannot be published to the Chrome Web Store under that identity. Technical compatibility is not authorization. |
+| Undocumented Apple interfaces       | Medium to high               | The native-helper protocol and private iCloud web endpoints are unsupported and may change. Their use may also be restricted by Apple agreements applicable to a particular developer, account, service, or jurisdiction.                                                             |
+| Chrome Web Store review             | High in the current form     | Store policy prohibits impersonation, misleading branding, and third-party IP infringement. The fixed Apple identity and current product branding would require resolution before submission.                                                                                         |
 
-- Open Passwords and related ported components: Apache License 2.0 notices retained.
-- Original Hide My Email browser extension: MIT License and original copyright notice retained.
+Relevant primary sources:
 
-See:
+- [Apple Guidelines for Using Apple Trademarks and Copyrights](https://www.apple.com/legal/intellectual-property/guidelinesfor3rdparties.html)
+- [Chrome Web Store: Impersonation & Intellectual Property](https://developer.chrome.com/docs/webstore/program-policies/impersonation-and-intellectual-property)
+- [Chrome extension manifest `key` documentation](https://developer.chrome.com/docs/extensions/reference/manifest/key)
+- [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
 
-- `LICENSES/Open-Passwords-APACHE-2.0.txt`
-- `LICENSES/Hide-My-Email-MIT.txt`
-- `OPEN_PASSWORDS_NOTICE`
-- `THIRD_PARTY_NOTICES.md`
+Before a public release, the conservative route is to adopt a neutral product name and icon, complete a file-level copyright/provenance audit, publish an accurate privacy policy, and either obtain written authorization for the Apple-dependent integration or ship a store build that removes unsupported identity/private-interface dependencies. Consult a qualified lawyer for a definitive assessment; this repository documentation is not legal advice.
 
+## Known limitations
 
-### v1.2.8 interaction polish
+- Apple Passwords integration is macOS/Chromium-specific.
+- Firefox can build the Hide My Email portion, but does not provide the same Apple Passwords native-helper path.
+- The official Apple extension must be disabled while this build uses the same extension ID.
+- Native or iCloud behavior can stop working after an Apple or browser update.
+- iCloud recent-mail features work only when aliases forward to `@icloud.com`, `@me.com`, or `@mac.com`.
 
-The Apple Passwords access-code field in the toolbar popup automatically verifies when six digits are entered or pasted, so the normal unlock flow no longer requires pressing **Unlock**.
+## Development checks
 
+```bash
+npm run typecheck
+npm test
+npm run prettier:check
+```
 
-### v1.2.9 deterministic site-icon fallback
-
-- Rejects date-like/numeric HME labels such as `2025.6.30` as website domains.
-- A monogram is rendered immediately and remains underneath any verified favicon, so async loading can never produce an empty tile.
-- Removes Chrome `_favicon` as the final resolver fallback because Chrome may return a valid generic globe when no site favicon exists.
-- Adds conventional `favicon.png` and `favicon.svg` candidates.
-- Unresolved website icons now remain deterministic monograms across list and detail views.
-
-### v1.2.13 reliability repairs
-
-- Supersedes the v1.2.9 direct favicon-candidate strategy above; that entry is retained as release history.
-- Uses Chromium's Manifest V3 `_favicon` API instead of downloading website HTML or guessing remote `/favicon.*` paths.
-- Supports icons declared on CDN or hashed asset URLs through Chromium's favicon store.
-- Filters Chromium's generic globe response so unresolved websites still keep deterministic monograms.
-- Avoids third-party CSS/font preload warnings being attributed to `popup.html`.
-- Serializes context-menu setup and consumes `runtime.lastError`, preventing duplicate-ID errors during extension reload/install races.
-
-### v1.2.14 private signup and relay inbox
-
-- Adds an on-demand recent-mail list to each Hide My Email address without persisting message previews.
-- Detects 4–8 digit verification codes in recent mail subjects/previews and offers one-click copy.
-- Adds Smart Signup to the isolated inline chooser with Sign in with Apple detection, existing-alias reuse, explicit alias creation, and a prepared strong password that survives multi-step registration forms for up to ten minutes in content-script memory.
-
-### v1.2.15 password lookup reliability
-
-- Keeps Apple Passwords lookup independent from the slower existing-alias discovery used by Smart Signup.
-- Distinguishes native lookup errors from a genuine empty vault and prevents stale failures from overwriting newer results.
-- Retries a transient empty native-helper response once and accepts known response-key variants across helper versions.
-- Repairs both Passwords and Hide My Email content scripts in tabs that were already open when the extension was reloaded.
-- Reopens the secure chooser when a trusted click lands on a login field that the page had already focused.
-
-### v1.2.16 exact-site password priority
-
-- Shows password results before the independent verification-code metadata query completes.
-- Bounds queued metadata and interactive secret reads so a dismissed Touch ID request cannot leave later lookups spinning forever.
-- Prioritizes credentials whose Apple `sites` metadata exactly matches the current hostname, then falls back to related-domain entries and recent-use ordering.
-
-### v1.2.17 focused inline suggestions
-
-- Shows only saved-login rows when Apple Passwords already has credentials for the current website.
-- Keeps Private Signup as the single combined private-address and strong-password action when no saved login exists.
-- Removes the redundant standalone Hide My Email row from the inline chooser; creating an address remains available from the editable-field context menu.
-- Retires stale content UI quietly when an extension reload invalidates its runtime context.
-
-### v1.2.18 cached addresses and password details
-
-- Reuses the Hide My Email address list while switching tabs, with silent refresh and mutation-aware cache invalidation.
-- Fills the current page and expands the selected saved login in the popup, including username, masked password, website, and verification-code availability.
-- Keeps revealed secrets in popup memory only and stops showing an expired verification code until the user explicitly refreshes it.
-
-### v1.2.19 one Touch ID prompt per action
-
-- Stops automatically reading a verification code after a password entry opens, avoiding two consecutive Touch ID prompts and a popup waiting on the second prompt.
-- Reads an exact-account verification code only after the user explicitly selects **Show Code** in the expanded detail card.
-
-### v1.2.20 verification-code fill and details
-
-- A standalone verification-code row now fills the page and expands its username, current code, countdown, and website instead of closing the popup.
-- The displayed code comes from the same Touch ID-authorized native read used for filling, so opening its details does not trigger another prompt.
-- Removes the toolbar popup's manual **Lock Passwords Session** action; automatic session and plaintext cleanup remains in place when the native connection ends.
+The dependency set intentionally avoids `webpack-dev-server`, `sockjs`, and the deprecated `uuid@8` dependency chain that previously produced audit warnings.
