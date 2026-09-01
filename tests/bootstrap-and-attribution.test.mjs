@@ -39,12 +39,16 @@ test('background bootstrap still loads the application when contextMenus.onShown
   assert.deepEqual(importedScripts, ['background.bundle.js']);
 });
 
-test('background startup repairs a missing Hide My Email context menu', () => {
+test('background startup repairs a missing Hide My Email context menu without duplicate-id errors', () => {
   const source = readProjectFile('src/pages/Background/index.ts');
 
-  assert.match(source, /setupContextMenu\(\)\.catch\(console\.debug\)/);
+  assert.match(source, /let contextMenuSetupRequest: Promise<void> \| undefined/);
+  assert.match(source, /contextMenuSetupRequest \|\|= setupContextMenuOnce\(\)\.finally/);
+  assert.match(source, /runtime\.lastError\?\.message/);
+  assert.match(source, /duplicate id/i);
   assert.match(source, /contextMenus\.update\(CONTEXT_MENU_ITEM_ID, menuProperties\)/);
-  assert.match(source, /contextMenus\.create\(\{[\s\S]*contexts: \['editable'\]/);
+  assert.match(source, /contextMenus\.create\(\s*\{[\s\S]*contexts: \['editable'\]/);
+  assert.doesNotMatch(source, /if \(isFirefox\) setupContextMenu\(\)/);
 });
 
 test('popup favicon discovery uses Chromium storage without third-party requests', () => {

@@ -29,7 +29,6 @@ import {
   signedInCtaCopy,
   signedOutCtaCopy,
 } from './constants';
-import { isFirefox } from '../../browserUtils';
 import { initializeI18n, tr } from '../../i18n';
 
 const i18nReady = initializeI18n();
@@ -350,7 +349,47 @@ browser.runtime.onMessage.addListener((uncastedMessage: unknown) => {
   })();
 });
 
-const setupContextMenu = async () => {
+type ContextMenuProperties = Pick<
+  browser.Menus.CreateCreatePropertiesType,
+  'title' | 'enabled' | 'visible'
+>;
+
+const createContextMenu = (menuProperties: ContextMenuProperties): Promise<void> =>
+  new Promise((resolve, reject) => {
+    try {
+      browser.contextMenus.create(
+        {
+          id: CONTEXT_MENU_ITEM_ID,
+          contexts: ['editable'],
+          ...menuProperties,
+        },
+        () => {
+          // contextMenus.create reports failures through runtime.lastError instead of throwing.
+          // Reading it here prevents Chromium from recording an "Unchecked runtime.lastError".
+          const errorMessage = browser.runtime.lastError?.message;
+          if (!errorMessage) {
+            resolve();
+            return;
+          }
+
+          // Another lifecycle callback may have created the item after our update attempt.
+          // Treat that race as success, but update the winner so its current label/state is kept.
+          if (/duplicate id/i.test(errorMessage)) {
+            browser.contextMenus
+              .update(CONTEXT_MENU_ITEM_ID, menuProperties)
+              .then(resolve, reject);
+            return;
+          }
+
+          reject(new Error(errorMessage));
+        }
+      );
+    } catch (error) {
+      reject(error);
+    }
+  });
+
+const setupContextMenuOnce = async () => {
   await i18nReady;
   const [options, clientState] = await Promise.all([
     getBrowserStorageValue('iCloudHmeOptions'),
@@ -371,22 +410,26 @@ const setupContextMenu = async () => {
   try {
     await browser.contextMenus.update(CONTEXT_MENU_ITEM_ID, menuProperties);
   } catch {
-    try {
-      browser.contextMenus.create({
-        id: CONTEXT_MENU_ITEM_ID,
-        contexts: ['editable'],
-        ...menuProperties,
-      });
-    } catch (error) {
-      console.debug('Could not create Hide My Email context menu', error);
-    }
+    await createContextMenu(menuProperties);
   }
+};
+
+let contextMenuSetupRequest: Promise<void> | undefined;
+const setupContextMenu = () => {
+  contextMenuSetupRequest ||= setupContextMenuOnce().finally(() => {
+    contextMenuSetupRequest = undefined;
+  });
+  return contextMenuSetupRequest;
+};
+
+const requestContextMenuSetup = () => {
+  setupContextMenu().catch(console.debug);
 };
 
 // Also repair the command whenever the service worker starts. This recovers automatically from
 // an older bootstrap failure that prevented the onInstalled listener from creating the item.
-setupContextMenu().catch(console.debug);
-browser.runtime.onInstalled.addListener(setupContextMenu);
+requestContextMenuSetup();
+browser.runtime.onInstalled.addListener(requestContextMenuSetup);
 
 type OptionsStorageChange = {
   [K in keyof browser.Storage.StorageChange]: browser.Storage.StorageChange[K] extends unknown
@@ -560,5 +603,3 @@ browser.runtime.onInstalled.addListener(
     }
   }
 );
-
-if (isFirefox) setupContextMenu();

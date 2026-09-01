@@ -187,10 +187,11 @@ The Apple Passwords access-code field in the toolbar popup automatically verifie
 - Adds conventional `favicon.png` and `favicon.svg` candidates.
 - Unresolved website icons now remain deterministic monograms across list and detail views.
 
-### v1.2.13 Chromium favicon repair
+### v1.2.13 reliability repairs
 
 - Supersedes the v1.2.9 direct favicon-candidate strategy above; that entry is retained as release history.
 - Uses Chromium's Manifest V3 `_favicon` API instead of downloading website HTML or guessing remote `/favicon.*` paths.
 - Supports icons declared on CDN or hashed asset URLs through Chromium's favicon store.
 - Filters Chromium's generic globe response so unresolved websites still keep deterministic monograms.
 - Avoids third-party CSS/font preload warnings being attributed to `popup.html`.
+- Serializes context-menu setup and consumes `runtime.lastError`, preventing duplicate-ID errors during extension reload/install races.

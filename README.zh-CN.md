@@ -185,10 +185,11 @@ Apple 密码原生辅助程序集成面向 macOS 上的 Chromium 浏览器。隐
 - 增加常见的 `favicon.png` 和 `favicon.svg` 候选路径。
 - 无法解析的网站图标在列表和详情视图中均保持确定性的字母显示。
 
-### v1.2.13 Chromium 网站图标修复
+### v1.2.13 可靠性修复
 
 - 取代上方 v1.2.9 的直接图标候选探测策略；v1.2.9 条目仅作为版本历史保留。
 - 使用 Chromium Manifest V3 `_favicon` API，不再下载网站 HTML 或猜测远程 `/favicon.*` 路径。
 - 通过 Chromium 图标存储支持 CDN 或哈希资源地址中声明的网站图标。
 - 过滤 Chromium 返回的通用地球图标，使无法解析的网站继续显示确定性的字母图标。
 - 避免第三方 CSS/字体预加载警告被归因到 `popup.html`。
+- 串行化右键菜单初始化并读取 `runtime.lastError`，避免扩展重载/安装竞态产生重复 ID 错误。
