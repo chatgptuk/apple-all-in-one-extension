@@ -43,6 +43,51 @@ type HmeWithActivity = HmeEmail & {
 
 const MAIL_ACTIVITY_CACHE_TTL = 24 * 60 * 60 * 1000;
 const MAIL_ACTIVITY_SCAN_THREADS = 80;
+const HME_LIST_CACHE_TTL = 2 * 60 * 1000;
+const HME_LIST_SESSION_CACHE_KEY = 'hmeListSessionCacheV1';
+type HmeListSnapshot = {
+  emails: HmeEmail[];
+  forwardTo?: string;
+  fetchedAt: number;
+  refreshKey: number;
+};
+const hmeListCache = new Map<string, HmeListSnapshot>();
+const hmeListCacheKey = (client: ICloudClient) => `${client.setupUrl}\n${client.dsid || ''}`;
+const readHmeListSnapshot = async (cacheKey: string): Promise<HmeListSnapshot | undefined> => {
+  const memorySnapshot = hmeListCache.get(cacheKey);
+  if (memorySnapshot) return memorySnapshot;
+  try {
+    const stored = await browser.storage.session.get(HME_LIST_SESSION_CACHE_KEY);
+    const record = stored[HME_LIST_SESSION_CACHE_KEY] as {
+      cacheKey?: string;
+      snapshot?: HmeListSnapshot;
+    } | undefined;
+    if (record?.cacheKey !== cacheKey || !Array.isArray(record.snapshot?.emails)) return undefined;
+    hmeListCache.set(cacheKey, record.snapshot);
+    return record.snapshot;
+  } catch {
+    return undefined;
+  }
+};
+const writeHmeListSnapshot = async (cacheKey: string, snapshot: HmeListSnapshot) => {
+  hmeListCache.set(cacheKey, snapshot);
+  try {
+    await browser.storage.session.set({
+      [HME_LIST_SESSION_CACHE_KEY]: { cacheKey, snapshot },
+    });
+  } catch {
+    // In-memory caching still prevents reloads while this popup stays open.
+  }
+};
+const invalidateHmeListSnapshot = async (cacheKey?: string) => {
+  if (cacheKey) hmeListCache.delete(cacheKey);
+  else hmeListCache.clear();
+  try {
+    await browser.storage.session.remove(HME_LIST_SESSION_CACHE_KEY);
+  } catch {
+    // Older browsers may not expose storage.session.
+  }
+};
 
 const cx = (...classes: Array<string | false | undefined>) => classes.filter(Boolean).join(' ');
 
@@ -435,6 +480,14 @@ type AppSection = 'passwords' | 'hide-email';
 type PasswordState = 'loading' | 'disconnected' | 'needs_pin' | 'unlocked' | 'no_helper';
 type PasswordLogin = { username?: string };
 type OtpItem = { username?: string; domain?: string; source?: string };
+type PasswordDetail = { username: string; password: string; website: string };
+type PasswordOtpDetail = {
+  username: string;
+  domain: string;
+  code: string;
+  fetchedAt: number;
+  expiresAt: number;
+};
 
 const AppSegmentedControl = ({ value, onChange }: { value: AppSection; onChange: (value: AppSection) => void }) => (
   <nav className="app-segmented" aria-label={tr('Apple All-In-One sections', 'Apple All-In-One 分区')}>
@@ -494,9 +547,31 @@ const PasswordsView = () => {
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
+  const [expandedLoginKey, setExpandedLoginKey] = useState<string>();
+  const [loginDetail, setLoginDetail] = useState<PasswordDetail>();
+  const [detailNotice, setDetailNotice] = useState<string>();
+  const [detailOtp, setDetailOtp] = useState<PasswordOtpDetail | null>();
+  const [detailOtpLoading, setDetailOtpLoading] = useState(false);
+  const [detailOtpError, setDetailOtpError] = useState<string>();
+  const [passwordRevealed, setPasswordRevealed] = useState(false);
+  const [copiedDetail, setCopiedDetail] = useState<'username' | 'password' | 'otp'>();
+  const [otpNow, setOtpNow] = useState(Date.now());
   const pinVerifyInFlight = useRef(false);
   const siteLoadSequence = useRef(0);
+  const detailLoadSequence = useRef(0);
   const displayedSiteKey = useRef('');
+
+  const clearLoginDetail = () => {
+    detailLoadSequence.current += 1;
+    setExpandedLoginKey(undefined);
+    setLoginDetail(undefined);
+    setDetailNotice(undefined);
+    setDetailOtp(undefined);
+    setDetailOtpLoading(false);
+    setDetailOtpError(undefined);
+    setPasswordRevealed(false);
+    setCopiedDetail(undefined);
+  };
 
   const loadSiteItems = async () => {
     const sequence = ++siteLoadSequence.current;
@@ -506,6 +581,7 @@ const PasswordsView = () => {
       displayedSiteKey.current = siteKey;
       setLogins([]);
       setOtps([]);
+      clearLoginDetail();
     }
     try {
       if (tab?.url) setHost(new URL(tab.url).hostname);
@@ -683,17 +759,82 @@ const PasswordsView = () => {
     }
   };
 
-  const fillLogin = async (login: PasswordLogin) => {
-    setBusy(`login:${login.username || ''}`);
-    const res = await sendPasswordMessage<{ ok?: boolean; filled?: boolean; error?: string; reason?: string }>({ type: 'fillOnPage', loginName: { username: login.username || '' } });
+  useEffect(() => {
+    if (!detailOtp) return;
+    setOtpNow(Date.now());
+    const timer = window.setInterval(() => setOtpNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [detailOtp]);
+
+  const loadLoginOtp = async (username: string, sequence = detailLoadSequence.current) => {
+    setDetailOtpLoading(true);
+    setDetailOtpError(undefined);
+    const res = await sendPasswordMessage<{
+      ok?: boolean;
+      item?: PasswordOtpDetail | null;
+      error?: string;
+    }>({ type: 'getOtpForLoginDetails', username }, 65_000);
+    if (sequence !== detailLoadSequence.current) return;
+    setDetailOtpLoading(false);
+    if (res?.ok) {
+      setDetailOtp(res.item || null);
+      setOtpNow(Date.now());
+    } else {
+      setDetailOtp(null);
+      setDetailOtpError(res?.error || tr('Could not read the verification code.', '无法读取验证码。'));
+    }
+  };
+
+  const fillAndShowLogin = async (login: PasswordLogin, loginKey: string) => {
+    const sequence = ++detailLoadSequence.current;
+    const username = login.username || '';
+    setExpandedLoginKey(loginKey);
+    setLoginDetail(undefined);
+    setDetailNotice(undefined);
+    setDetailOtp(undefined);
+    setDetailOtpError(undefined);
+    setDetailOtpLoading(false);
+    setPasswordRevealed(false);
+    setCopiedDetail(undefined);
+    setError(undefined);
+    setBusy(`login:${loginKey}`);
+    const res = await sendPasswordMessage<{
+      ok?: boolean;
+      filled?: boolean;
+      error?: string;
+      reason?: string;
+      detail?: PasswordDetail;
+    }>({ type: 'fillOnPage', loginName: { username } });
+    if (sequence !== detailLoadSequence.current) return;
     setBusy(undefined);
-    if (res?.ok && res.filled) window.close();
-    else if (res?.reason === 'no_login_field') {
-      setError(tr(
-        'No compatible username or password field is visible on this page. Open the sign-in form first, then try again.',
-        '当前页面没有可填充的账号或密码输入框。请先打开登录表单，然后重试。'
+    if (!res?.ok || !res.detail) {
+      setError(res?.error || tr('Could not open this saved login.', '无法打开这条已保存登录。'));
+      return;
+    }
+
+    setLoginDetail(res.detail);
+    if (!res.filled && res.reason === 'no_login_field') {
+      setDetailNotice(tr(
+        'Details opened, but no compatible sign-in field is visible on the page.',
+        '已展开详情，但当前页面没有可填充的登录输入框。'
       ));
-    } else setError(res?.error || tr('Could not fill this login.', '无法填充此登录信息。'));
+    } else if (!res.filled) {
+      setDetailNotice(tr(
+        'Details opened, but the page was not filled.',
+        '已展开详情，但没有填充当前网页。'
+      ));
+    }
+    void loadLoginOtp(res.detail.username || username, sequence);
+  };
+
+  const copyLoginDetail = async (kind: 'username' | 'password' | 'otp', value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedDetail(kind);
+      window.setTimeout(() => setCopiedDetail((current) => current === kind ? undefined : current), 1400);
+    } catch {
+      setDetailNotice(tr('Could not copy this value.', '无法复制此内容。'));
+    }
   };
 
   const fillOtp = async (item: OtpItem) => {
@@ -708,6 +849,17 @@ const PasswordsView = () => {
       ));
     } else setError(res?.error || tr('Could not fill this verification code.', '无法填充此验证码。'));
   };
+
+  const detailOtpSeconds = detailOtp
+    ? Math.max(0, Math.ceil((detailOtp.expiresAt - otpNow) / 1000))
+    : 0;
+  const detailOtpExpired = !!detailOtp && detailOtpSeconds <= 0;
+  const formattedDetailOtp = detailOtp?.code
+    .replace(/\s+/g, '')
+    .replace(/(.{3})(?=.)/g, '$1 ');
+  const maskedDetailPassword = loginDetail?.password
+    ? '•'.repeat(Math.min(24, Math.max(10, loginDetail.password.length)))
+    : tr('No password', '无密码');
 
   if (state === 'loading') {
     return <div className="hme-view-body unified-center compact-state"><Spinner /><h2>{tr('Connecting to Apple Passwords…', '正在连接 Apple 密码…')}</h2><p>{tr('The macOS helper session stays encrypted end to end.', 'macOS 辅助程序会话始终保持端到端加密。')}</p></div>;
@@ -769,14 +921,83 @@ const PasswordsView = () => {
 
   return (
     <div className="hme-view-body passwords-view">
-      <div className="password-site-heading"><span>{tr('This Website', '此网站')}</span><strong>{host}</strong><button type="button" className="hme-circle-action" onClick={async () => { await sendPasswordMessage({ type: 'clearCache' }); await loadSiteItems(); }}><Symbol name="refresh" size={16} /></button></div>
-      {logins.length > 0 && <><div className="hme-section-label">{tr('Saved Passwords', '已保存的密码')}</div><section className="hme-group unified-password-list">{logins.map((login, index) => <button type="button" key={`${login.username}-${index}`} onClick={() => fillLogin(login)} disabled={!!busy}><span className="hme-symbol-tile is-purple"><Symbol name="key" size={17} /></span><span className="unified-row-copy"><strong>{login.username || tr('(no username)', '(无用户名)')}</strong><small>{tr('Fill from Apple Passwords', '从 Apple 密码填充')}</small></span>{busy === `login:${login.username || ''}` ? <Spinner compact /> : <Symbol name="chevron-right" size={15} />}</button>)}</section></>}
+      <div className="password-site-heading"><span>{tr('This Website', '此网站')}</span><strong>{host}</strong><button type="button" className="hme-circle-action" onClick={async () => { clearLoginDetail(); await sendPasswordMessage({ type: 'clearCache' }); await loadSiteItems(); }}><Symbol name="refresh" size={16} /></button></div>
+      {logins.length > 0 && <>
+        <div className="hme-section-label">{tr('Saved Passwords', '已保存的密码')}</div>
+        <section className="hme-group unified-password-list">
+          {logins.map((login, index) => {
+            const loginKey = `${login.username || ''}:${index}`;
+            const expanded = expandedLoginKey === loginKey;
+            const loginBusy = busy === `login:${loginKey}`;
+            return (
+              <div className={cx('unified-login-entry', expanded && 'is-expanded')} key={loginKey}>
+                <button
+                  type="button"
+                  className="unified-login-button"
+                  onClick={() => void fillAndShowLogin(login, loginKey)}
+                  disabled={!!busy}
+                  aria-expanded={expanded}
+                >
+                  <span className="hme-symbol-tile is-purple"><Symbol name="key" size={17} /></span>
+                  <span className="unified-row-copy">
+                    <strong>{login.username || tr('(no username)', '(无用户名)')}</strong>
+                    <small>{tr('Fill page and open details', '填充网页并展开详情')}</small>
+                  </span>
+                  {loginBusy ? <Spinner compact /> : <Symbol name="chevron-right" size={15} className={cx('unified-login-chevron', expanded && 'is-expanded')} />}
+                </button>
+
+                {expanded && (
+                  <div className="password-detail-card">
+                    {!loginDetail ? (
+                      <div className="password-detail-loading">
+                        {loginBusy ? <><Spinner compact /> <span>{tr('Opening saved login…', '正在打开已保存登录…')}</span></> : <span>{tr('Details unavailable', '详情不可用')}</span>}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="password-detail-identity">
+                          <SiteIcon domain={loginDetail.website} label={loginDetail.website} large />
+                          <strong>{loginDetail.website}</strong>
+                        </div>
+                        <dl className="password-detail-fields">
+                          <div>
+                            <dt>{tr('Username', '用户名')}</dt>
+                            <dd><span>{loginDetail.username || tr('(no username)', '(无用户名)')}</span>{loginDetail.username && <button type="button" onClick={() => void copyLoginDetail('username', loginDetail.username)}>{copiedDetail === 'username' ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>}</dd>
+                          </div>
+                          <div>
+                            <dt>{tr('Password', '密码')}</dt>
+                            <dd><span className={cx('password-detail-secret', passwordRevealed && 'is-revealed')}>{passwordRevealed ? loginDetail.password : maskedDetailPassword}</span><span className="password-detail-actions"><button type="button" onClick={() => setPasswordRevealed((shown) => !shown)}>{passwordRevealed ? tr('Hide', '隐藏') : tr('Show', '显示')}</button>{loginDetail.password && <button type="button" onClick={() => void copyLoginDetail('password', loginDetail.password)}>{copiedDetail === 'password' ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>}</span></dd>
+                          </div>
+                          <div>
+                            <dt>{tr('Verification Code', '验证码')}</dt>
+                            <dd>
+                              {detailOtpLoading ? <span className="password-detail-otp-status"><Spinner compact /> {tr('Reading…', '正在读取…')}</span> : detailOtp && !detailOtpExpired ? <span className="password-detail-otp"><i style={{ background: `conic-gradient(var(--hme-green) ${detailOtpSeconds / 30 * 360}deg, var(--hme-fill) 0deg)` }} /> <b>{formattedDetailOtp}</b><small>{detailOtpSeconds}s</small></span> : <span className="password-detail-muted">{detailOtpExpired ? tr('Code expired', '验证码已过期') : tr('Not saved', '未保存')}</span>}
+                              <span className="password-detail-actions">
+                                {(detailOtpExpired || detailOtpError) && <button type="button" disabled={detailOtpLoading} onClick={() => void loadLoginOtp(loginDetail.username)}>{tr('Refresh', '刷新')}</button>}
+                                {detailOtp && !detailOtpExpired && <button type="button" onClick={() => void copyLoginDetail('otp', detailOtp.code)}>{copiedDetail === 'otp' ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>}
+                              </span>
+                            </dd>
+                          </div>
+                          <div><dt>{tr('Website', '网站')}</dt><dd><span>{loginDetail.website}</span></dd></div>
+                        </dl>
+                        {detailNotice && <p className="password-detail-notice"><Symbol name="info" size={14} /> {detailNotice}</p>}
+                        {detailOtpError && <p className="password-detail-notice"><Symbol name="info" size={14} /> {detailOtpError}</p>}
+                        <p className="password-detail-privacy">{tr('Secrets are kept only in this popup and cleared when it closes.', '敏感信息仅保留在当前弹窗内，关闭后即清除。')}</p>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </section>
+      </>}
       {otps.length > 0 && <><div className="hme-section-label">{tr('Verification Codes', '验证码')}</div><section className="hme-group unified-password-list">{otps.map((item, index) => <button type="button" key={`${item.username}-${index}`} onClick={() => fillOtp(item)} disabled={!!busy}><span className="hme-symbol-tile is-blue"><Symbol name="code" size={17} /></span><span className="unified-row-copy"><strong>{item.username || tr('Verification Code', '验证码')}</strong><small>{item.domain ? `${tr('For', '用于')} ${item.domain}` : tr('Fill current code', '填充当前验证码')}</small></span>{busy === `otp:${item.username || ''}` ? <Spinner compact /> : <Symbol name="chevron-right" size={15} />}</button>)}</section></>}
       {(siteItemsLoading || otpItemsLoading) && !error && !logins.length && !otps.length && <div className="hme-loading-state"><Spinner /> <span>{tr('Checking Apple Passwords…', '正在查询 Apple 密码…')}</span></div>}
       {!siteItemsLoading && !otpItemsLoading && !error && !logins.length && !otps.length && <section className="hme-group unified-empty-group"><span className="hme-symbol-tile is-purple"><Symbol name="key" size={18} /></span><div><strong>{tr('No saved items for this website', '此网站没有已保存项目')}</strong><span>{tr('Click a sign-in field to use the secure inline chooser.', '点击登录输入框即可使用安全的内联选择器。')}</span></div></section>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
       <button className="hme-plain-link unified-lock" type="button" onClick={async () => {
         await sendPasswordMessage({ type: 'disconnect' });
+        clearLoginDetail();
         setLogins([]);
         setOtps([]);
         setState('disconnected');
@@ -868,7 +1089,7 @@ const SignInView = ({ error, onRetry }: { error?: string; onRetry?: () => void }
   );
 };
 
-const GenerateView = ({ client }: { client: ICloudClient }) => {
+const GenerateView = ({ client, onCreated }: { client: ICloudClient; onCreated: () => void }) => {
   const [hmeEmail, setHmeEmail] = useState<string>();
   const [forwardTo, setForwardTo] = useState<string>();
   const [host, setHost] = useState('');
@@ -931,6 +1152,7 @@ const GenerateView = ({ client }: { client: ICloudClient }) => {
         note || undefined
       );
       setReserved(result);
+      onCreated();
       if (autofill) {
         try {
           await sendMessageToTab(MessageType.Autofill, result.hme);
@@ -1099,14 +1321,17 @@ const ManageView = ({
   onSelect: (hme: HmeWithActivity) => void;
   refreshKey: number;
 }) => {
-  const [emails, setEmails] = useState<HmeEmail[]>();
-  const [forwardTo, setForwardTo] = useState<string>();
+  const cacheKey = hmeListCacheKey(client);
+  const cachedList = hmeListCache.get(cacheKey);
+  const initialCachedList = cachedList?.refreshKey === refreshKey ? cachedList : undefined;
+  const [emails, setEmails] = useState<HmeEmail[] | undefined>(() => initialCachedList?.emails);
+  const [forwardTo, setForwardTo] = useState<string | undefined>(() => initialCachedList?.forwardTo);
   const [activity, setActivity] = useState<Record<string, number>>({});
   const [activityStatus, setActivityStatus] = useState<MailActivityStatus>('idle');
   const [activityMessage, setActivityMessage] = useState('');
   const [activityRefreshKey, setActivityRefreshKey] = useState(0);
   const [search, setSearch] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!initialCachedList);
   const [error, setError] = useState<string>();
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -1114,25 +1339,49 @@ const ManageView = ({
   const [bulkMessage, setBulkMessage] = useState('');
 
   useEffect(() => {
+    let cancelled = false;
     const load = async () => {
-      setIsLoading(true);
+      const cached = await readHmeListSnapshot(cacheKey);
+      if (cancelled) return;
+      const cacheMatchesView = !!cached && cached.refreshKey === refreshKey;
+      const cacheIsFresh =
+        cacheMatchesView &&
+        Date.now() - cached.fetchedAt < HME_LIST_CACHE_TTL;
+      if (cacheMatchesView) {
+        setEmails(cached.emails);
+        setForwardTo(cached.forwardTo);
+        setIsLoading(false);
+      }
+      if (!cacheMatchesView) setIsLoading(true);
       setError(undefined);
       try {
-        const [result, cachedActivity] = await Promise.all([
-          new PremiumMailSettings(client).listHme(),
-          getBrowserStorageValue('mailActivityCache'),
-        ]);
-        setEmails([...result.hmeEmails].sort((a, b) => b.createTimestamp - a.createTimestamp));
-        setForwardTo(result.selectedForwardTo);
+        const cachedActivity = await getBrowserStorageValue('mailActivityCache');
+        if (cancelled) return;
         if (cachedActivity?.byAlias) setActivity(cachedActivity.byAlias);
+        if (cacheIsFresh) return;
+
+        const result = await new PremiumMailSettings(client).listHme();
+        if (cancelled) return;
+        const sorted = [...result.hmeEmails].sort((a, b) => b.createTimestamp - a.createTimestamp);
+        const snapshot = {
+          emails: sorted,
+          forwardTo: result.selectedForwardTo,
+          fetchedAt: Date.now(),
+          refreshKey,
+        };
+        await writeHmeListSnapshot(cacheKey, snapshot);
+        if (cancelled) return;
+        setEmails(sorted);
+        setForwardTo(result.selectedForwardTo);
       } catch (e) {
-        setError(String(e));
+        if (!cancelled) setError(String(e));
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     };
     load();
-  }, [client, refreshKey]);
+    return () => { cancelled = true; };
+  }, [cacheKey, client, refreshKey]);
 
   useEffect(() => {
     if (!emails || !forwardTo) return;
@@ -1258,9 +1507,14 @@ const ManageView = ({
     }
 
     if (succeeded.size) {
-      setEmails((current) => current?.map((item) =>
-        succeeded.has(item.anonymousId) ? { ...item, isActive: false } : item
-      ));
+      setEmails((current) => {
+        const next = current?.map((item) =>
+          succeeded.has(item.anonymousId) ? { ...item, isActive: false } : item
+        );
+        const snapshot = hmeListCache.get(cacheKey);
+        if (next && snapshot) void writeHmeListSnapshot(cacheKey, { ...snapshot, emails: next });
+        return next;
+      });
     }
 
     setBulkBusy(undefined);
@@ -1306,9 +1560,14 @@ const ManageView = ({
       targets.filter((item) => deletedIds.has(item.anonymousId)).map((item) => item.hme)
     );
     if (deletedIds.size || deactivatedIds.size) {
-      setEmails((current) => current
-        ?.filter((item) => !deletedIds.has(item.anonymousId))
-        .map((item) => deactivatedIds.has(item.anonymousId) ? { ...item, isActive: false } : item));
+      setEmails((current) => {
+        const next = current
+          ?.filter((item) => !deletedIds.has(item.anonymousId))
+          .map((item) => deactivatedIds.has(item.anonymousId) ? { ...item, isActive: false } : item);
+        const snapshot = hmeListCache.get(cacheKey);
+        if (next && snapshot) void writeHmeListSnapshot(cacheKey, { ...snapshot, emails: next });
+        return next;
+      });
     }
     if (deletedIds.size) {
       setActivity((current) => {
@@ -1909,6 +2168,7 @@ const Popup = () => {
           );
           setHmeDiscoveryDone(false);
           setStoredPopupState(PopupState.SignedOut);
+          await invalidateHmeListSnapshot(hmeListCacheKey(constructClient(clientState)));
           setClientState(undefined);
           await performDeauthSideEffects();
         } else {
@@ -1944,6 +2204,7 @@ const Popup = () => {
     await client.signOut();
     await setBrowserStorageValue('clientState', undefined);
     await performDeauthSideEffects();
+    await invalidateHmeListSnapshot();
     setClientState(undefined);
     setStoredPopupState(PopupState.SignedOut);
     setSelected(undefined);
@@ -1951,7 +2212,10 @@ const Popup = () => {
   };
 
   const hmeLoading = isPopupStateLoading || isClientStateLoading || isHmeDiscovering;
-  const hmeClient = clientState ? constructClient(clientState) : undefined;
+  const hmeClient = useMemo(
+    () => clientState ? constructClient(clientState) : undefined,
+    [clientState]
+  );
   const headerSubtitle =
     appSection === 'passwords'
       ? tr('Apple Passwords, codes & passkeys', 'Apple 密码、验证码与通行密钥')
@@ -2001,7 +2265,10 @@ const Popup = () => {
         )}
 
         {appSection === 'hide-email' && !hmeLoading && hmeClient && view === 'generate' && (
-          <GenerateView client={hmeClient} />
+          <GenerateView client={hmeClient} onCreated={() => {
+            void invalidateHmeListSnapshot(hmeListCacheKey(hmeClient));
+            setRefreshKey((key) => key + 1);
+          }} />
         )}
 
         {appSection === 'hide-email' && !hmeLoading && hmeClient && view === 'manage' && (
@@ -2021,6 +2288,7 @@ const Popup = () => {
             hme={selected}
             onBack={() => setView('manage')}
             onChanged={(deleted, next) => {
+              void invalidateHmeListSnapshot(hmeListCacheKey(hmeClient));
               setRefreshKey((key) => key + 1);
               if (deleted) {
                 setSelected(undefined);

@@ -91,6 +91,26 @@ test('popup does not make verification-code metadata block the password list', (
   assert.match(popup, /10_000/);
 });
 
+test('popup saved-login clicks fill the page and open a popup-only secret detail card', () => {
+  const popup = readProjectFile('src/pages/Popup/Popup.tsx');
+  const background = readProjectFile('src/passwords/core/background.js');
+
+  assert.match(popup, /fillAndShowLogin/);
+  assert.match(popup, /Fill page and open details/);
+  assert.match(popup, /password-detail-card/);
+  assert.match(popup, /getOtpForLoginDetails/);
+  assert.match(background, /case "fillOnPage"[\s\S]*detail,[\s\S]*case "getOtpForLoginDetails"/);
+  assert.match(background, /isFromOwnUi\(sender\)/);
+  assert.doesNotMatch(
+    background,
+    /CONTENT_ALLOWED = new Set\(\[[^\]]*getOtpForLoginDetails/
+  );
+  assert.match(
+    background,
+    /const chosen = requested[\s\S]*normUsername\(item\.username\) === requested[\s\S]*: items\.find/
+  );
+});
+
 test('native metadata lookups can expire while queued behind an interactive secret read', async () => {
   const client = new ApplePasswords();
   client._lock = new Promise(() => {});

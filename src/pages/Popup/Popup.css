@@ -1009,7 +1009,8 @@ button { color: inherit; }
 }
 .password-site-heading > button { grid-area: button; }
 
-.unified-password-list button {
+.unified-password-list > button,
+.unified-login-entry > .unified-login-button {
   width: 100%;
   min-height: 58px;
   padding: 9px 11px 9px 12px;
@@ -1022,7 +1023,8 @@ button { color: inherit; }
   text-align: left;
   background: transparent;
 }
-.unified-password-list button + button::before {
+.unified-password-list > button + button::before,
+.unified-login-entry + .unified-login-entry::before {
   content: "";
   position: absolute;
   top: 0;
@@ -1031,8 +1033,13 @@ button { color: inherit; }
   height: .5px;
   background: var(--hme-separator);
 }
-.unified-password-list button:hover { background: var(--hme-fill); }
-.unified-password-list button:disabled { opacity: .66; }
+.unified-login-entry { position: relative; }
+.unified-password-list > button:hover,
+.unified-login-entry > .unified-login-button:hover { background: var(--hme-fill); }
+.unified-password-list > button:disabled,
+.unified-login-entry > .unified-login-button:disabled { opacity: .66; }
+.unified-login-chevron { transition: transform 160ms ease; }
+.unified-login-chevron.is-expanded { transform: rotate(90deg); }
 .unified-row-copy {
   flex: 1 1 auto;
   min-width: 0;
@@ -1053,6 +1060,147 @@ button { color: inherit; }
   white-space: nowrap;
   color: var(--hme-secondary-label);
   font-size: 10.5px;
+}
+
+.password-detail-card {
+  margin: 0 10px 11px;
+  border: .5px solid color-mix(in srgb, var(--hme-separator) 78%, transparent);
+  border-radius: 13px;
+  overflow: hidden;
+  color: var(--hme-label);
+  background: var(--hme-surface-secondary);
+}
+.password-detail-loading {
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--hme-secondary-label);
+  font-size: 11px;
+}
+.password-detail-identity {
+  padding: 15px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+.password-detail-identity .hme-site-icon.is-large {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+}
+.password-detail-identity .hme-site-icon.is-large img {
+  width: 29px;
+  height: 29px;
+}
+.password-detail-identity strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -.02em;
+}
+.password-detail-fields { margin: 0; padding: 0 12px; }
+.password-detail-fields > div {
+  min-height: 43px;
+  border-top: .5px solid var(--hme-separator);
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+}
+.password-detail-fields dt {
+  color: var(--hme-secondary-label);
+  font-size: 11px;
+}
+.password-detail-fields dd {
+  min-width: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  text-align: right;
+  font-size: 11px;
+}
+.password-detail-fields dd > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.password-detail-fields button {
+  width: auto;
+  min-height: 26px;
+  flex: 0 0 auto;
+  padding: 0 3px;
+  border: 0;
+  color: var(--hme-blue);
+  background: transparent;
+  font-size: 10.5px;
+  font-weight: 550;
+}
+.password-detail-fields button:hover { color: color-mix(in srgb, var(--hme-blue) 72%, var(--hme-label)); }
+.password-detail-fields button:disabled { opacity: .45; }
+.password-detail-secret {
+  letter-spacing: .04em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+}
+.password-detail-secret.is-revealed {
+  white-space: normal !important;
+  overflow-wrap: anywhere;
+  letter-spacing: 0;
+}
+.password-detail-actions { display: inline-flex; align-items: center; gap: 2px; }
+.password-detail-otp { display: inline-flex; align-items: center; gap: 6px; }
+.password-detail-otp i {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  position: relative;
+}
+.password-detail-otp i::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--hme-surface-secondary);
+}
+.password-detail-otp b {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 12px;
+  font-weight: 620;
+  letter-spacing: .04em;
+}
+.password-detail-otp small { color: var(--hme-secondary-label); font-size: 9px; }
+.password-detail-otp-status { display: inline-flex; align-items: center; gap: 5px; color: var(--hme-secondary-label); }
+.password-detail-muted { color: var(--hme-secondary-label); }
+.password-detail-notice {
+  margin: 0 12px;
+  padding: 9px 0;
+  border-top: .5px solid var(--hme-separator);
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  color: var(--hme-secondary-label);
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+.password-detail-notice svg { flex: 0 0 auto; }
+.password-detail-privacy {
+  margin: 0;
+  padding: 8px 12px 10px;
+  border-top: .5px solid var(--hme-separator);
+  color: var(--hme-tertiary-label);
+  font-size: 9px;
+  line-height: 1.35;
+  text-align: center;
 }
 .unified-empty-group {
   min-height: 70px;
@@ -1209,7 +1357,8 @@ button { color: inherit; }
 .hme-symbol-tile.is-cyan { background: #32ade6; }
 .hme-symbol-tile.is-gray { background: #8e8e93; }
 
-.unified-password-list button:hover,
+.unified-password-list > button:hover,
+.unified-login-entry > .unified-login-button:hover,
 .hme-list-row:hover {
   background: rgba(118, 118, 128, .08);
 }

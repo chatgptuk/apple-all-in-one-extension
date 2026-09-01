@@ -634,11 +634,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!/^https:\/\//i.test(tab.url) && !isLocalDev) {
             return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS page" });
           }
+          await ensureConnected();
+          if (!client.ready) {
+            return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
+          }
           let cred = pwCacheGet(host, msg.loginName?.username);
           if (!cred) {
             cred = await client.getPasswordForLoginName(tab.id, tab.url, msg.loginName);
             if (cred) pwCacheSet(host, cred);
           }
+          const detail = cred
+            ? {
+                username: cred.username || msg.loginName?.username || "",
+                password: cred.password || "",
+                website: host,
+              }
+            : undefined;
           let filled = false;
           if (cred) {
             // content script re-checks expectedHost before filling
@@ -655,6 +666,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 filled: false,
                 reason: resp.reason,
                 error: "No compatible username or password field was found on this page.",
+                detail,
               });
             }
             if (filled) {
@@ -662,7 +674,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               lastFillByTab.set(tab.id, { host, username: cred.username });
             }
           }
-          sendResponse({ ok: true, filled });
+          sendResponse({
+            ok: true,
+            filled,
+            detail,
+            error: !cred ? "The selected saved login could not be opened." : undefined,
+          });
+          break;
+        }
+
+        case "getOtpForLoginDetails": {
+          const tab = await activeTab();
+          if (!tab?.url || tab.id == null) {
+            return sendResponse({ ok: false, error: "no active tab" });
+          }
+          const host = registrableHost(tab.url);
+          if (!/^https:\/\//i.test(tab.url) && !isLocalDevHost(host)) {
+            return sendResponse({ ok: false, error: "refusing to read a verification code on a non-HTTPS page" });
+          }
+          await ensureConnected();
+          if (!client.ready) {
+            return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
+          }
+          const items = await client.getOneTimeCodeForURL(tab.id, tab.url);
+          const requested = normUsername(msg.username || "");
+          const chosen = requested
+            ? items.find((item) => item.code && normUsername(item.username) === requested)
+            : items.find((item) => item.code);
+          const fetchedAt = Date.now();
+          sendResponse({
+            ok: true,
+            item: chosen?.code
+              ? {
+                  username: chosen.username || "",
+                  domain: chosen.domain || host || "",
+                  code: String(chosen.code),
+                  fetchedAt,
+                  expiresAt: (Math.floor(fetchedAt / 30_000) + 1) * 30_000,
+                }
+              : null,
+          });
           break;
         }
 
