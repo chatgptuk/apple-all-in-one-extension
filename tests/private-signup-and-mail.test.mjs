@@ -20,6 +20,27 @@ const loadVerificationCodeExtractor = () => {
   return module.exports.extractMailVerificationCode;
 };
 
+const loadICloudClientModule = (fetchImpl) => {
+  const source = readProjectFile('src/iCloudClient.ts');
+  const javascript = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+    },
+  }).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(javascript, {
+    AbortController,
+    clearTimeout,
+    console,
+    exports: module.exports,
+    fetch: fetchImpl,
+    module,
+    setTimeout,
+  });
+  return module.exports;
+};
+
 test('mail verification-code detection favors contextual codes and rejects ordinary numbers', () => {
   const extract = loadVerificationCodeExtractor();
 
@@ -56,6 +77,38 @@ test('Hide My Email address lists survive tab switches and popup reopens without
   assert.match(popup, /const hmeClient = useMemo/);
   assert.match(popup, /invalidateHmeListSnapshot/);
   assert.match(popup, /onCreated=\{\(\) => \{[\s\S]*setRefreshKey/);
+});
+
+test('Hide My Email authorization failures clear stale popup sessions before surfacing', async () => {
+  for (const status of [401, 403, 429]) {
+    const authenticationFailures = [];
+    const { default: ICloudClient } = loadICloudClientModule(async () => ({
+      ok: false,
+      status,
+    }));
+    const client = new ICloudClient(
+      'https://setup.icloud.com/setup/ws/1',
+      undefined,
+      undefined,
+      (error) => authenticationFailures.push(error.status)
+    );
+
+    await assert.rejects(
+      client.request('GET', 'https://p170-maildomainws.icloud.com/v2/hme/list'),
+      (error) => error.status === status
+    );
+    assert.deepEqual(authenticationFailures, status === 429 ? [] : [status]);
+  }
+
+  const popup = readProjectFile('src/pages/Popup/Popup.tsx');
+  assert.match(popup, /handleHmeAuthenticationFailure/);
+  assert.match(
+    popup,
+    /constructClient\(clientState, handleHmeAuthenticationFailure\)/
+  );
+  assert.match(popup, /setHmeDiscoveryDone\(false\)/);
+  assert.match(popup, /invalidateHmeListSnapshot/);
+  assert.match(popup, /setClientState\(undefined\)/);
 });
 
 test('smart signup keeps alias discovery in the extension and requires a chooser action', () => {

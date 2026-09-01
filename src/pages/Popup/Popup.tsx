@@ -1,4 +1,4 @@
-import React, { Component, ErrorInfo, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Component, ErrorInfo, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import browser from 'webextension-polyfill';
 
 import BrandIcon from '../../components/BrandIcon';
@@ -8,6 +8,7 @@ import ICloudClient, {
   PremiumMailSettings,
   DEFAULT_SETUP_URL,
   CN_SETUP_URL,
+  type ICloudAuthenticationFailureHandler,
   UnsuccessfulRequestError,
 } from '../../iCloudClient';
 import {
@@ -2075,9 +2076,17 @@ const DetailsView = ({
   );
 };
 
-const constructClient = (clientState: Store['clientState']) => {
+const constructClient = (
+  clientState: Store['clientState'],
+  onAuthenticationFailure?: ICloudAuthenticationFailureHandler
+) => {
   if (!clientState) throw new Error(tr('Cannot construct client without state', '缺少状态，无法创建 iCloud 客户端'));
-  return new ICloudClient(clientState.setupUrl, clientState.webservices, clientState.dsid);
+  return new ICloudClient(
+    clientState.setupUrl,
+    clientState.webservices,
+    clientState.dsid,
+    onAuthenticationFailure
+  );
 };
 
 const performDeauthSideEffects = async () => {
@@ -2106,6 +2115,7 @@ const Popup = () => {
   const [hmeDiscoveryDone, setHmeDiscoveryDone] = useState(false);
   const [hmeDiscoveryError, setHmeDiscoveryError] = useState<string>();
   const [hmeDiscoveryRetry, setHmeDiscoveryRetry] = useState(0);
+  const hmeAuthFailureInFlight = useRef(false);
   const [autoHmeReconnect] = useBrowserStorageState(
     'autoHmeReconnect',
     DEFAULT_STORE.autoHmeReconnect
@@ -2303,6 +2313,36 @@ const Popup = () => {
     );
   };
 
+  const handleHmeAuthenticationFailure = useCallback<ICloudAuthenticationFailureHandler>(
+    async () => {
+      if (hmeAuthFailureInFlight.current) return;
+      hmeAuthFailureInFlight.current = true;
+
+      const expiredClientState = clientState;
+      setHmeDiscoveryError(
+        tr(
+          'Your iCloud web session expired. Sign in to iCloud.com to reconnect Hide My Email.',
+          '你的 iCloud 网页登录状态已失效。请登录 iCloud.com 以重新连接隐藏邮件地址。'
+        )
+      );
+      setHmeDiscoveryDone(false);
+      setStoredPopupState(PopupState.SignedOut);
+      setSelected(undefined);
+      setView('generate');
+
+      if (expiredClientState) {
+        await invalidateHmeListSnapshot(hmeListCacheKey(constructClient(expiredClientState)));
+      }
+      setClientState(undefined);
+      await performDeauthSideEffects();
+    },
+    [clientState, setClientState, setStoredPopupState]
+  );
+
+  useEffect(() => {
+    if (clientState) hmeAuthFailureInFlight.current = false;
+  }, [clientState]);
+
   const signOutHme = async () => {
     if (!clientState) return;
     const client = constructClient(clientState);
@@ -2318,8 +2358,10 @@ const Popup = () => {
 
   const hmeLoading = isPopupStateLoading || isClientStateLoading || isHmeDiscovering;
   const hmeClient = useMemo(
-    () => clientState ? constructClient(clientState) : undefined,
-    [clientState]
+    () => clientState
+      ? constructClient(clientState, handleHmeAuthenticationFailure)
+      : undefined,
+    [clientState, handleHmeAuthenticationFailure]
   );
   const headerSubtitle =
     appSection === 'passwords'

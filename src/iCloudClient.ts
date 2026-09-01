@@ -10,6 +10,10 @@ export class UnsuccessfulRequestError extends Error {
   }
 }
 
+export type ICloudAuthenticationFailureHandler = (
+  error: UnsuccessfulRequestError
+) => void | Promise<void>;
+
 type ServiceName = 'premiummailsettings' | 'mccgateway';
 export type ICloudWebservices = Partial<
   Record<ServiceName, { url: string; status: string }>
@@ -22,7 +26,8 @@ class ICloudClient {
   constructor(
     readonly setupUrl: typeof DEFAULT_SETUP_URL | typeof CN_SETUP_URL,
     public webservices?: ICloudWebservices,
-    public dsid?: string
+    public dsid?: string,
+    private readonly onAuthenticationFailure?: ICloudAuthenticationFailureHandler
   ) {}
 
   public async request(
@@ -47,12 +52,23 @@ class ICloudClient {
       });
 
       if (!response.ok) {
-        throw new UnsuccessfulRequestError(
+        const requestError = new UnsuccessfulRequestError(
           `Request to ${method} ${url} failed with status code ${response.status}`,
           response.status,
           method,
           url
         );
+        if (
+          this.onAuthenticationFailure &&
+          (response.status === 401 || response.status === 403)
+        ) {
+          try {
+            await this.onAuthenticationFailure(requestError);
+          } catch (handlerError) {
+            console.debug('iCloud authentication-failure cleanup failed', handlerError);
+          }
+        }
+        throw requestError;
       }
       return await response.json();
     } finally {
