@@ -532,17 +532,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!client.ready) return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
           const items = await client.getOneTimeCodeForURL(tab.id, tab.url);
           const requested = normUsername(msg.username || "");
-          const chosen =
-            items.find((item) => item.code && requested && normUsername(item.username) === requested) ||
-            items.find((item) => item.code);
+          const chosen = requested
+            ? items.find((item) => item.code && normUsername(item.username) === requested)
+            : items.find((item) => item.code);
           if (!chosen?.code) return sendResponse({ ok: false, filled: false, error: "No verification code is available for this website." });
+          const fetchedAt = Date.now();
+          const detail = {
+            username: chosen.username || msg.username || "",
+            domain: chosen.domain || host || "",
+            code: String(chosen.code),
+            fetchedAt,
+            expiresAt: (Math.floor(fetchedAt / 30_000) + 1) * 30_000,
+          };
           // Toolbar fill targets the top frame. Cross-origin embedded sign-in frames use the
           // inline chooser, which already knows the exact sender.frameId.
-          const resp = await sendToPasswordContent(
-            tab.id,
-            { type: "fillOtp", code: String(chosen.code), expectedHost: host },
-            0,
-          );
+          let resp;
+          try {
+            resp = await sendToPasswordContent(
+              tab.id,
+              { type: "fillOtp", code: String(chosen.code), expectedHost: host },
+              0,
+            );
+          } catch (e) {
+            return sendResponse({
+              ok: true,
+              filled: false,
+              reason: "fill_failed",
+              error: String(e?.message ?? e),
+              detail,
+            });
+          }
           sendResponse({
             ok: true,
             filled: !!resp?.filled,
@@ -550,6 +569,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             error: !resp?.filled && resp?.reason === "no_otp_field"
               ? "No verification-code field was found on this page."
               : undefined,
+            detail,
           });
           break;
         }
@@ -748,11 +768,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // popup refresh: drop cached passwords so the next fill re-reads a just-changed one
           pwCacheClear();
           sendResponse({ ok: true });
-          break;
-
-        case "disconnect":
-          client.disconnect();
-          sendResponse({ ok: true, state: client.state });
           break;
 
         default:

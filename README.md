@@ -6,7 +6,7 @@
 
 > **v1.2.6:** Toolbar startup is isolated behind a small bootstrap that repairs global/per-tab action state, while opening the popup can automatically begin the Apple Passwords access-code flow.
 
-# Apple All-In-One v1.2.18
+# Apple All-In-One v1.2.20
 
 **Apple All-In-One** is an independent Chromium extension that brings several Apple account features into one place: Apple Passwords, passkeys, verification codes, and iCloud+ Hide My Email.
 
@@ -238,5 +238,16 @@ The Apple Passwords access-code field in the toolbar popup automatically verifie
 ### v1.2.18 cached addresses and password details
 
 - Reuses the Hide My Email address list while switching tabs, with silent refresh and mutation-aware cache invalidation.
-- Fills the current page and expands the selected saved login in the popup, including username, masked password, website, and an exact-account verification code when available.
+- Fills the current page and expands the selected saved login in the popup, including username, masked password, website, and verification-code availability.
 - Keeps revealed secrets in popup memory only and stops showing an expired verification code until the user explicitly refreshes it.
+
+### v1.2.19 one Touch ID prompt per action
+
+- Stops automatically reading a verification code after a password entry opens, avoiding two consecutive Touch ID prompts and a popup waiting on the second prompt.
+- Reads an exact-account verification code only after the user explicitly selects **Show Code** in the expanded detail card.
+
+### v1.2.20 verification-code fill and details
+
+- A standalone verification-code row now fills the page and expands its username, current code, countdown, and website instead of closing the popup.
+- The displayed code comes from the same Touch ID-authorized native read used for filling, so opening its details does not trigger another prompt.
+- Removes the toolbar popup's manual **Lock Passwords Session** action; automatic session and plaintext cleanup remains in place when the native connection ends.

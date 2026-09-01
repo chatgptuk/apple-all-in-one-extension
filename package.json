@@ -1,6 +1,6 @@
 {
   "name": "apple-all-in-one",
-  "version": "1.2.18",
+  "version": "1.2.20",
   "description": "Apple Passwords, passkeys, verification codes, and iCloud Hide My Email in one Chromium extension.",
   "license": "SEE LICENSES/",
   "scripts": {

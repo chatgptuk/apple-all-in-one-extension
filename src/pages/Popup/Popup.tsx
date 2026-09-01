@@ -553,6 +553,9 @@ const PasswordsView = () => {
   const [detailOtp, setDetailOtp] = useState<PasswordOtpDetail | null>();
   const [detailOtpLoading, setDetailOtpLoading] = useState(false);
   const [detailOtpError, setDetailOtpError] = useState<string>();
+  const [expandedOtpKey, setExpandedOtpKey] = useState<string>();
+  const [otpEntryDetail, setOtpEntryDetail] = useState<PasswordOtpDetail>();
+  const [otpEntryNotice, setOtpEntryNotice] = useState<string>();
   const [passwordRevealed, setPasswordRevealed] = useState(false);
   const [copiedDetail, setCopiedDetail] = useState<'username' | 'password' | 'otp'>();
   const [otpNow, setOtpNow] = useState(Date.now());
@@ -569,6 +572,9 @@ const PasswordsView = () => {
     setDetailOtp(undefined);
     setDetailOtpLoading(false);
     setDetailOtpError(undefined);
+    setExpandedOtpKey(undefined);
+    setOtpEntryDetail(undefined);
+    setOtpEntryNotice(undefined);
     setPasswordRevealed(false);
     setCopiedDetail(undefined);
   };
@@ -760,11 +766,11 @@ const PasswordsView = () => {
   };
 
   useEffect(() => {
-    if (!detailOtp) return;
+    if (!detailOtp && !otpEntryDetail) return;
     setOtpNow(Date.now());
     const timer = window.setInterval(() => setOtpNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [detailOtp]);
+  }, [detailOtp, otpEntryDetail]);
 
   const loadLoginOtp = async (username: string, sequence = detailLoadSequence.current) => {
     setDetailOtpLoading(true);
@@ -794,6 +800,9 @@ const PasswordsView = () => {
     setDetailOtp(undefined);
     setDetailOtpError(undefined);
     setDetailOtpLoading(false);
+    setExpandedOtpKey(undefined);
+    setOtpEntryDetail(undefined);
+    setOtpEntryNotice(undefined);
     setPasswordRevealed(false);
     setCopiedDetail(undefined);
     setError(undefined);
@@ -824,7 +833,6 @@ const PasswordsView = () => {
         '已展开详情，但没有填充当前网页。'
       ));
     }
-    void loadLoginOtp(res.detail.username || username, sequence);
   };
 
   const copyLoginDetail = async (kind: 'username' | 'password' | 'otp', value: string) => {
@@ -833,21 +841,44 @@ const PasswordsView = () => {
       setCopiedDetail(kind);
       window.setTimeout(() => setCopiedDetail((current) => current === kind ? undefined : current), 1400);
     } catch {
-      setDetailNotice(tr('Could not copy this value.', '无法复制此内容。'));
+      const message = tr('Could not copy this value.', '无法复制此内容。');
+      if (expandedOtpKey) setOtpEntryNotice(message);
+      else setDetailNotice(message);
     }
   };
 
-  const fillOtp = async (item: OtpItem) => {
-    setBusy(`otp:${item.username || ''}`);
-    const res = await sendPasswordMessage<{ ok?: boolean; filled?: boolean; error?: string; reason?: string }>({ type: 'fillOtpOnPage', username: item.username || '' });
+  const fillAndShowOtp = async (item: OtpItem, otpKey: string) => {
+    clearLoginDetail();
+    const sequence = detailLoadSequence.current;
+    setExpandedOtpKey(otpKey);
+    setError(undefined);
+    setBusy(`otp:${otpKey}`);
+    const res = await sendPasswordMessage<{
+      ok?: boolean;
+      filled?: boolean;
+      error?: string;
+      reason?: string;
+      detail?: PasswordOtpDetail;
+    }>({ type: 'fillOtpOnPage', username: item.username || '' });
+    if (sequence !== detailLoadSequence.current) return;
     setBusy(undefined);
-    if (res?.ok && res.filled) window.close();
-    else if (res?.reason === 'no_otp_field') {
-      setError(tr(
-        'No verification-code field is visible on this page. Open the two-factor step first, then try again.',
-        '当前页面没有可填充的验证码输入框。请先进入双重认证步骤，然后重试。'
+    if (!res?.ok || !res.detail) {
+      setError(res?.error || tr('Could not open this verification code.', '无法打开这条验证码。'));
+      return;
+    }
+    setOtpEntryDetail(res.detail);
+    setOtpNow(Date.now());
+    if (!res.filled && res.reason === 'no_otp_field') {
+      setOtpEntryNotice(tr(
+        'Details opened, but no verification-code field is visible on the page.',
+        '已展开详情，但当前页面没有可填充的验证码输入框。'
       ));
-    } else setError(res?.error || tr('Could not fill this verification code.', '无法填充此验证码。'));
+    } else if (!res.filled) {
+      setOtpEntryNotice(tr(
+        'Details opened, but the page was not filled.',
+        '已展开详情，但没有填充当前网页。'
+      ));
+    }
   };
 
   const detailOtpSeconds = detailOtp
@@ -860,6 +891,16 @@ const PasswordsView = () => {
   const maskedDetailPassword = loginDetail?.password
     ? '•'.repeat(Math.min(24, Math.max(10, loginDetail.password.length)))
     : tr('No password', '无密码');
+  const otpEntrySeconds = otpEntryDetail
+    ? Math.max(0, Math.ceil((otpEntryDetail.expiresAt - otpNow) / 1000))
+    : 0;
+  const otpEntryExpired = !!otpEntryDetail && otpEntrySeconds <= 0;
+  const formattedOtpEntry = otpEntryDetail?.code
+    .replace(/\s+/g, '')
+    .replace(/(.{3})(?=.)/g, '$1 ');
+  const otpEntryWebsite = otpEntryDetail
+    ? hostnameFromText(otpEntryDetail.domain || '') || otpEntryDetail.domain || host
+    : host;
 
   if (state === 'loading') {
     return <div className="hme-view-body unified-center compact-state"><Spinner /><h2>{tr('Connecting to Apple Passwords…', '正在连接 Apple 密码…')}</h2><p>{tr('The macOS helper session stays encrypted end to end.', 'macOS 辅助程序会话始终保持端到端加密。')}</p></div>;
@@ -929,6 +970,18 @@ const PasswordsView = () => {
             const loginKey = `${login.username || ''}:${index}`;
             const expanded = expandedLoginKey === loginKey;
             const loginBusy = busy === `login:${loginKey}`;
+            const detailUsername = (loginDetail?.username || login.username || '')
+              .normalize('NFC')
+              .replace(/[\u200B-\u200D\uFEFF]/g, '')
+              .trim()
+              .toLowerCase();
+            const matchingOtpAvailable = detailUsername
+              ? otps.some((item) => (item.username || '')
+                  .normalize('NFC')
+                  .replace(/[\u200B-\u200D\uFEFF]/g, '')
+                  .trim()
+                  .toLowerCase() === detailUsername)
+              : otps.length === 1;
             return (
               <div className={cx('unified-login-entry', expanded && 'is-expanded')} key={loginKey}>
                 <button
@@ -970,8 +1023,9 @@ const PasswordsView = () => {
                           <div>
                             <dt>{tr('Verification Code', '验证码')}</dt>
                             <dd>
-                              {detailOtpLoading ? <span className="password-detail-otp-status"><Spinner compact /> {tr('Reading…', '正在读取…')}</span> : detailOtp && !detailOtpExpired ? <span className="password-detail-otp"><i style={{ background: `conic-gradient(var(--hme-green) ${detailOtpSeconds / 30 * 360}deg, var(--hme-fill) 0deg)` }} /> <b>{formattedDetailOtp}</b><small>{detailOtpSeconds}s</small></span> : <span className="password-detail-muted">{detailOtpExpired ? tr('Code expired', '验证码已过期') : tr('Not saved', '未保存')}</span>}
+                              {detailOtpLoading ? <span className="password-detail-otp-status"><Spinner compact /> {tr('Waiting for Touch ID…', '正在等待 Touch ID…')}</span> : detailOtp && !detailOtpExpired ? <span className="password-detail-otp"><i style={{ background: `conic-gradient(var(--hme-green) ${detailOtpSeconds / 30 * 360}deg, var(--hme-fill) 0deg)` }} /> <b>{formattedDetailOtp}</b><small>{detailOtpSeconds}s</small></span> : <span className="password-detail-muted">{detailOtpExpired ? tr('Code expired', '验证码已过期') : detailOtpError ? tr('Could not read code', '无法读取验证码') : detailOtp === null ? tr('Not saved', '未保存') : otpItemsLoading ? tr('Checking availability…', '正在检查是否可用…') : matchingOtpAvailable ? tr('Touch ID required', '需要 Touch ID') : tr('Not saved', '未保存')}</span>}
                               <span className="password-detail-actions">
+                                {detailOtp === undefined && !otpItemsLoading && matchingOtpAvailable && <button type="button" disabled={detailOtpLoading} onClick={() => void loadLoginOtp(loginDetail.username)}>{tr('Show Code', '显示验证码')}</button>}
                                 {(detailOtpExpired || detailOtpError) && <button type="button" disabled={detailOtpLoading} onClick={() => void loadLoginOtp(loginDetail.username)}>{tr('Refresh', '刷新')}</button>}
                                 {detailOtp && !detailOtpExpired && <button type="button" onClick={() => void copyLoginDetail('otp', detailOtp.code)}>{copiedDetail === 'otp' ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>}
                               </span>
@@ -991,18 +1045,69 @@ const PasswordsView = () => {
           })}
         </section>
       </>}
-      {otps.length > 0 && <><div className="hme-section-label">{tr('Verification Codes', '验证码')}</div><section className="hme-group unified-password-list">{otps.map((item, index) => <button type="button" key={`${item.username}-${index}`} onClick={() => fillOtp(item)} disabled={!!busy}><span className="hme-symbol-tile is-blue"><Symbol name="code" size={17} /></span><span className="unified-row-copy"><strong>{item.username || tr('Verification Code', '验证码')}</strong><small>{item.domain ? `${tr('For', '用于')} ${item.domain}` : tr('Fill current code', '填充当前验证码')}</small></span>{busy === `otp:${item.username || ''}` ? <Spinner compact /> : <Symbol name="chevron-right" size={15} />}</button>)}</section></>}
+      {otps.length > 0 && <>
+        <div className="hme-section-label">{tr('Verification Codes', '验证码')}</div>
+        <section className="hme-group unified-password-list">
+          {otps.map((item, index) => {
+            const otpKey = `${item.username || ''}:${index}`;
+            const expanded = expandedOtpKey === otpKey;
+            const otpBusy = busy === `otp:${otpKey}`;
+            return (
+              <div className={cx('unified-login-entry', expanded && 'is-expanded')} key={otpKey}>
+                <button
+                  type="button"
+                  className="unified-login-button"
+                  onClick={() => void fillAndShowOtp(item, otpKey)}
+                  disabled={!!busy}
+                  aria-expanded={expanded}
+                >
+                  <span className="hme-symbol-tile is-blue"><Symbol name="code" size={17} /></span>
+                  <span className="unified-row-copy">
+                    <strong>{item.username || tr('Verification Code', '验证码')}</strong>
+                    <small>{tr('Fill page and open details', '填充网页并展开详情')}</small>
+                  </span>
+                  {otpBusy ? <Spinner compact /> : <Symbol name="chevron-right" size={15} className={cx('unified-login-chevron', expanded && 'is-expanded')} />}
+                </button>
+
+                {expanded && (
+                  <div className="password-detail-card">
+                    {!otpEntryDetail ? (
+                      <div className="password-detail-loading">
+                        {otpBusy ? <><Spinner compact /> <span>{tr('Reading verification code…', '正在读取验证码…')}</span></> : <span>{tr('Details unavailable', '详情不可用')}</span>}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="password-detail-identity">
+                          <SiteIcon domain={otpEntryWebsite} label={otpEntryWebsite} large />
+                          <strong>{otpEntryWebsite}</strong>
+                        </div>
+                        <dl className="password-detail-fields">
+                          <div><dt>{tr('Username', '用户名')}</dt><dd><span>{otpEntryDetail.username || tr('(no username)', '(无用户名)')}</span></dd></div>
+                          <div>
+                            <dt>{tr('Verification Code', '验证码')}</dt>
+                            <dd>
+                              {!otpEntryExpired ? <span className="password-detail-otp"><i style={{ background: `conic-gradient(var(--hme-green) ${otpEntrySeconds / 30 * 360}deg, var(--hme-fill) 0deg)` }} /> <b>{formattedOtpEntry}</b><small>{otpEntrySeconds}s</small></span> : <span className="password-detail-muted">{tr('Code expired', '验证码已过期')}</span>}
+                              <span className="password-detail-actions">
+                                {otpEntryExpired ? <button type="button" disabled={otpBusy} onClick={() => void fillAndShowOtp(item, otpKey)}>{tr('Refresh', '刷新')}</button> : <button type="button" onClick={() => void copyLoginDetail('otp', otpEntryDetail.code)}>{copiedDetail === 'otp' ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>}
+                              </span>
+                            </dd>
+                          </div>
+                          <div><dt>{tr('Website', '网站')}</dt><dd><span>{otpEntryWebsite}</span></dd></div>
+                        </dl>
+                        {otpEntryNotice && <p className="password-detail-notice"><Symbol name="info" size={14} /> {otpEntryNotice}</p>}
+                        <p className="password-detail-privacy">{tr('This code was returned by the same Touch ID-authorized action used to fill the page.', '此验证码来自同一次经 Touch ID 授权的网页填充操作。')}</p>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </section>
+      </>}
       {(siteItemsLoading || otpItemsLoading) && !error && !logins.length && !otps.length && <div className="hme-loading-state"><Spinner /> <span>{tr('Checking Apple Passwords…', '正在查询 Apple 密码…')}</span></div>}
       {!siteItemsLoading && !otpItemsLoading && !error && !logins.length && !otps.length && <section className="hme-group unified-empty-group"><span className="hme-symbol-tile is-purple"><Symbol name="key" size={18} /></span><div><strong>{tr('No saved items for this website', '此网站没有已保存项目')}</strong><span>{tr('Click a sign-in field to use the secure inline chooser.', '点击登录输入框即可使用安全的内联选择器。')}</span></div></section>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      <button className="hme-plain-link unified-lock" type="button" onClick={async () => {
-        await sendPasswordMessage({ type: 'disconnect' });
-        clearLoginDetail();
-        setLogins([]);
-        setOtps([]);
-        setState('disconnected');
-        setHasChallenge(false);
-      }}>{tr('Lock Passwords Session', '锁定密码会话')}</button>
     </div>
   );
 };

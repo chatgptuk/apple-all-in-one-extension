@@ -99,6 +99,8 @@ test('popup saved-login clicks fill the page and open a popup-only secret detail
   assert.match(popup, /Fill page and open details/);
   assert.match(popup, /password-detail-card/);
   assert.match(popup, /getOtpForLoginDetails/);
+  assert.match(popup, /Show Code', '显示验证码/);
+  assert.doesNotMatch(popup, /void loadLoginOtp\(res\.detail/);
   assert.match(background, /case "fillOnPage"[\s\S]*detail,[\s\S]*case "getOtpForLoginDetails"/);
   assert.match(background, /isFromOwnUi\(sender\)/);
   assert.doesNotMatch(
@@ -109,6 +111,29 @@ test('popup saved-login clicks fill the page and open a popup-only secret detail
     background,
     /const chosen = requested[\s\S]*normUsername\(item\.username\) === requested[\s\S]*: items\.find/
   );
+});
+
+test('standalone verification-code clicks fill and reveal from one secret read', () => {
+  const popup = readProjectFile('src/pages/Popup/Popup.tsx');
+  const background = readProjectFile('src/passwords/core/background.js');
+
+  assert.match(popup, /fillAndShowOtp/);
+  assert.match(popup, /same Touch ID-authorized action used to fill the page/);
+  assert.match(background, /case "fillOtpOnPage"[\s\S]*const detail = \{[\s\S]*code: String\(chosen\.code\)[\s\S]*detail,/);
+  assert.match(
+    background,
+    /const chosen = requested[\s\S]*normUsername\(item\.username\) === requested[\s\S]*: items\.find/
+  );
+  assert.doesNotMatch(popup, /fillAndShowOtp[\s\S]{0,900}window\.close\(\)/);
+});
+
+test('popup exposes unlock flows without a manual password-session lock action', () => {
+  const popup = readProjectFile('src/pages/Popup/Popup.tsx');
+  const background = readProjectFile('src/passwords/core/background.js');
+
+  assert.match(popup, /Unlock Apple Passwords/);
+  assert.doesNotMatch(popup, /Lock Passwords Session|锁定密码会话|type: 'disconnect'/);
+  assert.doesNotMatch(background, /case "disconnect"/);
 });
 
 test('native metadata lookups can expire while queued behind an interactive secret read', async () => {

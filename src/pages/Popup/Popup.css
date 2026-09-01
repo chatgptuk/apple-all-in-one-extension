@@ -1217,7 +1217,6 @@ button { color: inherit; }
 }
 .unified-empty-group strong { font-size: 12px; font-weight: 590; }
 .unified-empty-group span { color: var(--hme-secondary-label); font-size: 10.5px; line-height: 1.35; }
-.unified-lock { margin-top: 3px; }
 
 @media (prefers-color-scheme: dark) {
   .app-segmented button.is-selected { background: #3a3a3c; box-shadow: 0 .5px 2px rgba(0,0,0,.42); }
