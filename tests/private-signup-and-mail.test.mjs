@@ -78,6 +78,17 @@ test('smart signup keeps alias discovery in the extension and requires a chooser
   assert.doesNotMatch(inline, /\.join\('-'\)/);
 });
 
+test('multi-step signup pages keep Hide My Email reuse eligible across SPA updates', () => {
+  const content = readProjectFile('src/passwords/content.js');
+
+  assert.match(content, /const SIGNUP_ROUTE =/);
+  assert.match(content, /register\|registration/);
+  assert.match(content, /const signupFields = new WeakSet\(\)/);
+  assert.match(content, /if \(signupFields\.has\(el\)\) return true/);
+  assert.match(content, /if \(SIGNUP_ROUTE\.test\(route\)\) return remember\(true\)/);
+  assert.match(content, /h1, h2, h3, \[role="heading"\], legend/);
+});
+
 test('saved logins suppress signup extras and standalone inline Hide My Email is removed', () => {
   const background = readProjectFile('src/pages/Background/index.ts');
   const content = readProjectFile('src/passwords/content.js');

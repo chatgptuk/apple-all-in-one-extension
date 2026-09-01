@@ -33,6 +33,7 @@ const SUBMITY_ATTR = /pwd|passw|reset|submit|login|signin|confirm|continue|next|
 const SIGNUP_LABEL = /\b(sign[\s-]?up|register|create[\s-]?(?:an?\s+)?account|join|get[\s-]?started)\b|注册|创建账号|建立帐户|建立帳戶|加入/i;
 const APPLE_SIGN_IN_LABEL = /\b(?:sign[\s-]?(?:in|up)|log[\s-]?in|continue)\s+with\s+apple\b|使用\s*Apple\s*(?:登录|登入|繼續|继续)|通过\s*Apple\s*(?:登录|登入)|用\s*Apple\s*(?:登录|登入)/i;
 const APPLE_SIGN_IN_ATTR = /sign.?in.?with.?apple|apple.?sign.?in|apple.?login|appleid.?auth/i;
+const SIGNUP_ROUTE = /(?:^|[\s/._-])(?:sign[\s_-]?up|register|registration|create[\s_-]?(?:an?[\s_-]+)?account|join)(?=$|[\s/._-])/i;
 const IFRAME_LOGIN_ALLOWLIST = [
   'accounts.google.com', 'adyen.com', 'affirm.com', 'afterpay.com', 'amazon.com', 'amazoncognito.com',
   'appleid.apple.com', 'atlassian.com', 'auth0.com', 'authkit.app', 'awsapps.com', 'b2clogin.com',
@@ -62,6 +63,7 @@ const UI_GAP = 6;
 const USER_GESTURE_WINDOW_MS = 1200;
 
 const everPassword = new WeakSet();
+const signupFields = new WeakSet();
 let fillAnchor = null;
 let lastAutofill = null;
 let lastGenerated = null;
@@ -289,13 +291,25 @@ function appleSignInControl() {
 }
 
 function isSignupContext(el) {
-  if (isNewPasswordField(el)) return true;
+  if (signupFields.has(el)) return true;
+  const remember = (matched) => {
+    if (matched) signupFields.add(el);
+    return matched;
+  };
+  if (isNewPasswordField(el)) return remember(true);
   if (!isHideEmailField(el)) return false;
+  // Multi-step SPA registration pages often replace or rename their submit button after the
+  // email step. The route is more stable, and remembering the field prevents a page that was
+  // already identified as registration from changing classification mid-flow.
+  let route = `${location.pathname || ''} ${location.hash || ''}`;
+  try { route = decodeURIComponent(route); } catch {}
+  if (SIGNUP_ROUTE.test(route)) return remember(true);
   const scope = el.form || document;
-  if (SIGNUP_LABEL.test(scope.getAttribute?.('action') || '')) return true;
-  return Array.from(scope.querySelectorAll('button, a, [role="button"], input[type="submit"], input[type="button"]')).some((control) =>
+  if (SIGNUP_LABEL.test(scope.getAttribute?.('action') || '')) return remember(true);
+  const matched = Array.from(scope.querySelectorAll('button, a, [role="button"], input[type="submit"], input[type="button"], h1, h2, h3, [role="heading"], legend')).some((control) =>
     SIGNUP_LABEL.test(`${control.textContent || ''} ${control.value || ''} ${control.getAttribute('aria-label') || ''}`),
   );
+  return remember(matched);
 }
 
 function preparedPasswordForThisSite() {
