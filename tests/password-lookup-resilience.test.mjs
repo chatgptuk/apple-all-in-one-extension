@@ -56,6 +56,18 @@ test('password chooser keeps existing-alias discovery off the initial lookup pat
   );
 });
 
+test('content messages absorb an invalidated extension context and retire the stale UI', () => {
+  const content = readProjectFile('src/passwords/content.js');
+
+  assert.match(content, /function isExtensionContextError/);
+  assert.match(content, /function stopInvalidatedContentScript/);
+  assert.match(content, /async function sendRuntimeMessage/);
+  assert.match(content, /Extension context invalidated/);
+  assert.equal((content.match(/chrome\.runtime\.sendMessage/g) || []).length, 1);
+  assert.match(content, /offerSeq \+= 1/);
+  assert.match(content, /try \{ closeUi\(\); \} catch/);
+});
+
 test('password lookup failures cannot be rendered as an empty vault', () => {
   const popup = readProjectFile('src/pages/Popup/Popup.tsx');
   const background = readProjectFile('src/passwords/core/background.js');

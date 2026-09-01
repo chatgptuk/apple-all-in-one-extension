@@ -80,11 +80,6 @@ button.row:hover, button.row:focus-visible { background: var(--hover); outline: 
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 
-/* Unified Hide My Email row */
-.privacy-icon {
-  color: #0a84ff;
-  background: light-dark(rgba(0,122,255,.10), rgba(10,132,255,.18));
-}
 .row-action {
   flex: 0 0 auto;
   min-width: 48px;
@@ -96,7 +91,6 @@ button.row:hover, button.row:focus-visible { background: var(--hover); outline: 
   font-size: 11px;
   font-weight: 650;
 }
-.privacy-row:disabled { opacity: .72; cursor: progress; }
 
 .apple-signin-icon {
   color: light-dark(#111, #fff);

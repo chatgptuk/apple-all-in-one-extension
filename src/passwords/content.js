@@ -82,6 +82,32 @@ let uiSecret = null;
 let uiAuthenticated = false;
 let uiAuthTimer = null;
 let uiLoadCount = 0;
+let extensionContextInvalidated = false;
+
+function isExtensionContextError(error) {
+  return /Extension context invalidated/i.test(String(error?.message ?? error ?? ''));
+}
+
+function stopInvalidatedContentScript() {
+  if (extensionContextInvalidated) return;
+  extensionContextInvalidated = true;
+  offerSeq += 1;
+  aliasLookupSeq += 1;
+  try { closeUi(); } catch {}
+}
+
+async function sendRuntimeMessage(message) {
+  if (extensionContextInvalidated) return null;
+  try {
+    return await chrome.runtime.sendMessage(message);
+  } catch (error) {
+    if (isExtensionContextError(error)) {
+      stopInvalidatedContentScript();
+      return null;
+    }
+    throw error;
+  }
+}
 
 function attrBlob(el) {
   let labelText = '';
@@ -611,13 +637,12 @@ function postUi(message) {
 }
 
 async function refreshExistingHme(anchor, token) {
-  const hme = await chrome.runtime
-    .sendMessage({ type: 'hme:inline-state', wantAlias: true })
+  const hme = await sendRuntimeMessage({ type: 'hme:inline-state', wantAlias: true })
     .catch(() => null);
   if (token !== aliasLookupSeq || uiAnchor !== anchor || !uiState || isOtpField(anchor)) return;
+  if (uiState.logins?.length) return;
   uiState = {
     ...uiState,
-    canHideEmail: isHideEmailField(anchor) && !!hme?.ready,
     canSmartSignup: isHideEmailField(anchor) && isSignupContext(anchor) && !!hme?.ready,
     existingHme: hme?.existingHme || null,
   };
@@ -628,7 +653,7 @@ async function reloadUiState() {
   const anchor = uiAnchor;
   if (!anchor) return;
   if (isOtpField(anchor)) {
-    const res = await chrome.runtime.sendMessage({ type: 'inlineOtpItems' }).catch(() => null);
+    const res = await sendRuntimeMessage({ type: 'inlineOtpItems' }).catch(() => null);
     if (uiAnchor !== anchor) return;
     uiState = {
       type: 'state',
@@ -650,33 +675,33 @@ async function reloadUiState() {
   } else {
     const wantsAlias = isHideEmailField(anchor);
     const [res, hme] = await Promise.all([
-      chrome.runtime.sendMessage({ type: 'inlineLogins' }).catch(() => null),
+      sendRuntimeMessage({ type: 'inlineLogins' }).catch(() => null),
       // This is storage-only. Existing-alias discovery is a separate, non-blocking request below.
-      chrome.runtime.sendMessage({ type: 'hme:inline-state', wantAlias: false }).catch(() => null),
+      sendRuntimeMessage({ type: 'hme:inline-state', wantAlias: false }).catch(() => null),
     ]);
     if (uiAnchor !== anchor) return;
+    const logins = res?.ok && !res.locked ? (res.logins || []).map((l) => ({ username: l.username || '' })) : [];
+    const hasSavedLogins = logins.length > 0;
     uiState = {
       type: 'state',
       mode: 'password',
       language: appResolvedLanguage(),
       host: location.hostname,
       locked: !!(res?.ok && res.locked),
-      logins: res?.ok && !res.locked ? (res.logins || []).map((l) => ({ username: l.username || '' })) : [],
+      logins,
       lookupError: !res?.ok && !res?.locked
         ? L('Apple Passwords lookup failed. Click the field again to retry.', 'Apple 密码查询失败，请再次点击输入框重试。')
         : '',
-      canGenerate: isNewPasswordField(anchor),
-      canHideEmail: wantsAlias && !!hme?.ready,
-      canSmartSignup: wantsAlias && isSignupContext(anchor) && !!hme?.ready,
-      hasAppleSignIn: !!appleSignInControl(),
+      canGenerate: !hasSavedLogins && isNewPasswordField(anchor),
+      canSmartSignup: !hasSavedLogins && wantsAlias && isSignupContext(anchor) && !!hme?.ready,
+      hasAppleSignIn: !hasSavedLogins && !!appleSignInControl(),
       existingHme: null,
       pendingPassword: preparedPasswordForThisSite(),
-      hmeGenerated: '',
       canUnlock: window === window.top,
     };
   }
   postUi(uiState);
-  if (!isOtpField(anchor) && isHideEmailField(anchor)) {
+  if (!isOtpField(anchor) && isHideEmailField(anchor) && !uiState.logins?.length) {
     const token = ++aliasLookupSeq;
     refreshExistingHme(anchor, token).catch(() => {});
   }
@@ -702,7 +727,7 @@ async function handleUiAction(msg) {
     if (!isOtpField(uiAnchor)) return;
     fillAnchor = uiAnchor;
     const username = typeof msg.username === 'string' ? msg.username : '';
-    const res = await chrome.runtime.sendMessage({ type: 'inlineFillOtp', username }).catch((e) => ({ ok: false, error: String(e) }));
+    const res = await sendRuntimeMessage({ type: 'inlineFillOtp', username }).catch((e) => ({ ok: false, error: String(e) }));
     if (res?.filled) closeUi();
     else postUi({
       type: 'error',
@@ -716,7 +741,7 @@ async function handleUiAction(msg) {
   if (msg.type === 'fill-login') {
     const username = typeof msg.username === 'string' ? msg.username : '';
     fillAnchor = uiAnchor;
-    const res = await chrome.runtime.sendMessage({ type: 'inlineFill', loginName: { username } }).catch((e) => ({ ok: false, error: String(e) }));
+    const res = await sendRuntimeMessage({ type: 'inlineFill', loginName: { username } }).catch((e) => ({ ok: false, error: String(e) }));
     if (res?.filled) closeUi();
     else postUi({
       type: 'error',
@@ -740,19 +765,11 @@ async function handleUiAction(msg) {
     return;
   }
 
-  if (msg.type === 'hme-fill-existing') {
-    if (!isHideEmailField(uiAnchor) || typeof msg.hme !== 'string' || !msg.hme.includes('@')) return;
-    setValue(uiAnchor, msg.hme);
-    uiAnchor.focus();
-    closeUi();
-    return;
-  }
-
   if (msg.type === 'smart-signup') {
     if (!isHideEmailField(uiAnchor) || typeof msg.password !== 'string' || msg.password.length < 8) return;
     let alias = typeof msg.hme === 'string' && msg.hme.includes('@') ? msg.hme : '';
     if (!alias) {
-      const result = await chrome.runtime.sendMessage({ type: 'hme:create-for-site' }).catch((e) => ({ ok: false, error: String(e) }));
+      const result = await sendRuntimeMessage({ type: 'hme:create-for-site' }).catch((e) => ({ ok: false, error: String(e) }));
       if (!result?.ok || !result.hme) {
         postUi({ type: 'error', message: result?.error || L('Could not create a private signup address.', '无法创建私密注册地址。') });
         return;
@@ -770,31 +787,6 @@ async function handleUiAction(msg) {
     return;
   }
 
-  if (msg.type === 'hme-generate') {
-    if (!isHideEmailField(uiAnchor)) return;
-    const res = await chrome.runtime.sendMessage({ type: 'hme:generate' }).catch((e) => ({ ok: false, error: String(e) }));
-    if (res?.ok && res.hme) {
-      uiState = { ...uiState, hmeGenerated: String(res.hme) };
-      postUi({ type: 'hme-generated', hme: String(res.hme) });
-    } else {
-      postUi({ type: 'error', message: res?.error || L('Could not create a private address.', '无法创建隐藏邮件地址。') });
-    }
-    return;
-  }
-
-  if (msg.type === 'hme-use') {
-    if (!isHideEmailField(uiAnchor) || typeof msg.hme !== 'string') return;
-    const res = await chrome.runtime.sendMessage({ type: 'hme:reserve', hme: msg.hme }).catch((e) => ({ ok: false, error: String(e) }));
-    if (res?.ok && res.hme) {
-      setValue(uiAnchor, String(res.hme));
-      uiAnchor.focus();
-      closeUi();
-    } else {
-      postUi({ type: 'error', message: res?.error || L('Could not reserve this private address.', '无法保留此隐藏邮件地址。') });
-    }
-    return;
-  }
-
   if (msg.type === 'generate-password') {
     if (!isNewPasswordField(uiAnchor) || typeof msg.password !== 'string' || msg.password.length < 8) return;
     if (fillGeneratedPassword(uiAnchor, msg.password)) closeUi();
@@ -806,7 +798,7 @@ async function handleUiAction(msg) {
       postUi({ type: 'error', message: L('Unlock from the toolbar on embedded sign-in pages.', '在嵌入式登录页面中，请从工具栏解锁。') });
       return;
     }
-    const res = await chrome.runtime.sendMessage({ type: 'requestChallenge', ifNeeded: true }).catch((e) => ({ ok: false, error: String(e) }));
+    const res = await sendRuntimeMessage({ type: 'requestChallenge', ifNeeded: true }).catch((e) => ({ ok: false, error: String(e) }));
     if (res?.ok) postUi({ type: 'pin-ready' });
     else postUi({ type: 'error', message: res?.error || L('Could not request an Apple Passwords code.', '无法请求 Apple 密码验证码。') });
     return;
@@ -814,7 +806,7 @@ async function handleUiAction(msg) {
 
   if (msg.type === 'new-code') {
     if (window !== window.top) return;
-    const res = await chrome.runtime.sendMessage({ type: 'requestChallenge' }).catch((e) => ({ ok: false, error: String(e) }));
+    const res = await sendRuntimeMessage({ type: 'requestChallenge' }).catch((e) => ({ ok: false, error: String(e) }));
     postUi(res?.ok ? { type: 'pin-ready', fresh: true } : { type: 'error', message: res?.error || L('Could not request a new code.', '无法请求新的验证码。') });
     return;
   }
@@ -823,7 +815,7 @@ async function handleUiAction(msg) {
     if (window !== window.top) return;
     const pin = String(msg.pin || '').replace(/\D/g, '').slice(0, 6);
     if (pin.length !== 6) return;
-    const res = await chrome.runtime.sendMessage({ type: 'verifyPin', pin }).catch((e) => ({ ok: false, error: String(e) }));
+    const res = await sendRuntimeMessage({ type: 'verifyPin', pin }).catch((e) => ({ ok: false, error: String(e) }));
     if (res?.ok && res.state === 'unlocked') {
       await reloadUiState();
     } else {
@@ -891,13 +883,17 @@ async function openForField(field) {
   if (!otp && !isLoginField(field) && !signupField) return;
   const seq = ++offerSeq;
   const [res, hme] = otp
-    ? [await chrome.runtime.sendMessage({ type: 'inlineOtpItems' }).catch(() => null), null]
+    ? [await sendRuntimeMessage({ type: 'inlineOtpItems' }).catch(() => null), null]
     : await Promise.all([
-        chrome.runtime.sendMessage({ type: 'inlineLogins' }).catch(() => null),
+        sendRuntimeMessage({ type: 'inlineLogins' }).catch(() => null),
         // Keep the password lookup independent from the potentially slow iCloud alias list.
-        chrome.runtime.sendMessage({ type: 'hme:inline-state', wantAlias: false }).catch(() => null),
+        sendRuntimeMessage({ type: 'hme:inline-state', wantAlias: false }).catch(() => null),
       ]);
   if (seq !== offerSeq || field !== deepActiveElement()) return;
+  const logins = !otp && res?.ok && !res.locked
+    ? (res.logins || []).map((l) => ({ username: l.username || '' }))
+    : [];
+  const hasSavedLogins = logins.length > 0;
   const state = otp ? {
     type: 'state',
     mode: 'otp',
@@ -918,23 +914,21 @@ async function openForField(field) {
     mode: 'password',
     host: location.hostname,
     locked: !!(res?.ok && res.locked),
-    logins: res?.ok && !res.locked ? (res.logins || []).map((l) => ({ username: l.username || '' })) : [],
+    logins,
     lookupError: !res?.ok && !res?.locked
       ? L('Apple Passwords lookup failed. Click the field again to retry.', 'Apple 密码查询失败，请再次点击输入框重试。')
       : '',
-    canGenerate: isNewPasswordField(field),
-    canHideEmail: isHideEmailField(field) && !!hme?.ready,
-    canSmartSignup: isHideEmailField(field) && isSignupContext(field) && !!hme?.ready,
-    hasAppleSignIn: !!appleSignInControl(),
+    canGenerate: !hasSavedLogins && isNewPasswordField(field),
+    canSmartSignup: !hasSavedLogins && isHideEmailField(field) && isSignupContext(field) && !!hme?.ready,
+    hasAppleSignIn: !hasSavedLogins && !!appleSignInControl(),
     existingHme: null,
     pendingPassword: preparedPasswordForThisSite(),
-    hmeGenerated: '',
     canUnlock: window === window.top,
   };
   const hasItems = otp ? state.otpItems.length > 0 : state.logins.length > 0;
-  if (!state.locked && !hasItems && !state.lookupError && !state.canGenerate && !state.canHideEmail && !state.hasAppleSignIn) return;
+  if (!state.locked && !hasItems && !state.lookupError && !state.canGenerate && !state.canSmartSignup && !state.hasAppleSignIn) return;
   buildSecureUi(field, state);
-  if (!otp && isHideEmailField(field) && hme?.ready) {
+  if (!otp && !hasSavedLogins && isHideEmailField(field) && hme?.ready) {
     const token = ++aliasLookupSeq;
     refreshExistingHme(field, token).catch(() => {});
   }
@@ -1059,7 +1053,7 @@ async function maybeOfferSave(scope) {
   const root = scope?.querySelectorAll ? scope : document;
   const pwInputs = Array.from(root.querySelectorAll('input')).filter(isPasswordish);
   const newPwCtx = generated || (cred.allPasswords || []).length >= 2 || pwInputs.some((p) => (p.getAttribute('autocomplete') || '').toLowerCase().includes('new-password'));
-  chrome.runtime.sendMessage({
+  sendRuntimeMessage({
     type: 'resolveSave',
     username: cred.username,
     password: savePassword,

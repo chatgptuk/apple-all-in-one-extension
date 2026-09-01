@@ -53,43 +53,6 @@ function svgMail() {
   return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5h13A3.5 3.5 0 0 1 22 8.5v7A3.5 3.5 0 0 1 18.5 19h-13A3.5 3.5 0 0 1 2 15.5v-7A3.5 3.5 0 0 1 5.5 5Zm-.8 3.1 6.1 4.7a2 2 0 0 0 2.4 0l6.1-4.7a1.2 1.2 0 0 0-.8-.3h-13c-.3 0-.6.1-.8.3Z"/></svg>';
 }
 
-function makeHideEmailRow(state) {
-  const button = document.createElement('button');
-  button.className = 'row privacy-row';
-  button.type = 'button';
-  const icon = document.createElement('span');
-  icon.className = 'row-icon privacy-icon';
-  icon.innerHTML = svgMail();
-  const main = document.createElement('span');
-  main.className = 'row-main';
-  const title = document.createElement('div');
-  title.className = 'row-title';
-  const existing = state.existingHme?.hme || '';
-  title.textContent = state.hmeGenerated || existing || L('Hide My Email', '隐藏邮件地址');
-  const sub = document.createElement('div');
-  sub.className = 'row-sub';
-  sub.textContent = state.hmeGenerated
-    ? L('Use this private address', '使用此隐藏地址')
-    : existing
-      ? `${L('Reuse for', '为此网站复用：')} ${safeHost(state.host)}`
-      : `${L('Create a private address for', '为以下网站创建隐藏地址：')} ${safeHost(state.host)}`;
-  main.append(title, sub);
-  const action = document.createElement('span');
-  action.className = 'row-action';
-  action.textContent = state.hmeGenerated || existing ? L('Use', '使用') : L('Create', '创建');
-  button.append(icon, main, action);
-  button.addEventListener('click', (e) => {
-    if (!e.isTrusted) return;
-    clearStatus();
-    button.disabled = true;
-    action.textContent = state.hmeGenerated || existing ? L('Using…', '正在使用…') : L('Creating…', '正在创建…');
-    if (state.hmeGenerated) send('hme-use', { hme: state.hmeGenerated }, e, button);
-    else if (existing) send('hme-fill-existing', { hme: existing }, e, button);
-    else send('hme-generate', {}, e, button);
-  });
-  return button;
-}
-
 function makeAppleSignInRow() {
   const button = document.createElement('button');
   button.className = 'row apple-signin-row';
@@ -348,20 +311,6 @@ function renderLocked(state) {
     wrap.appendChild(button);
   }
   content.appendChild(wrap);
-  const hasSection = true;
-  if (state.hasAppleSignIn || state.canSmartSignup) {
-    const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div);
-    appendSmartSignup(state);
-  }
-  if (state.canHideEmail) {
-    if (hasSection) { const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div); }
-    const label = document.createElement('div'); label.className = 'section-label'; label.textContent = L('Privacy', '隐私'); content.appendChild(label);
-    content.appendChild(makeHideEmailRow(state));
-  }
-  if (state.canGenerate) {
-    const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div);
-    appendGenerators(state.pendingPassword || '');
-  }
 }
 
 function renderPin() {
@@ -455,30 +404,24 @@ function renderState(state) {
     reportHeight();
     return;
   }
+  // A saved credential is the primary action for a sign-in field. Do not mix in
+  // signup, alias, Apple sign-in, or password-generation actions once one exists.
+  if (state.logins?.length) {
+    const label = document.createElement('div');
+    label.className = 'section-label';
+    label.textContent = state.logins.length === 1 ? L('Saved Login', '已保存的登录') : L('Saved Logins', '已保存的登录');
+    content.appendChild(label);
+    for (const login of state.logins) content.appendChild(makeLoginRow(login));
+    reportHeight();
+    return;
+  }
+
   let hasSection = appendSmartSignup(state);
   if (state.lookupError) {
     const error = document.createElement('div');
     error.className = 'empty error';
     error.textContent = state.lookupError;
     content.appendChild(error);
-    hasSection = true;
-  }
-  if (state.logins?.length) {
-    if (hasSection) { const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div); }
-    const label = document.createElement('div');
-    label.className = 'section-label';
-    label.textContent = state.logins.length === 1 ? L('Saved Login', '已保存的登录') : L('Saved Logins', '已保存的登录');
-    content.appendChild(label);
-    for (const login of state.logins) content.appendChild(makeLoginRow(login));
-    hasSection = true;
-  }
-  if (state.canHideEmail) {
-    if (hasSection) { const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div); }
-    const label = document.createElement('div');
-    label.className = 'section-label';
-    label.textContent = L('Privacy', '隐私');
-    content.appendChild(label);
-    content.appendChild(makeHideEmailRow(state));
     hasSection = true;
   }
   if (state.canGenerate) {
@@ -502,12 +445,6 @@ window.addEventListener('message', (event) => {
   port.onmessage = (e) => {
     const msg = e.data || {};
     if (msg.type === 'state') renderState(msg);
-    else if (msg.type === 'hme-generated') {
-      if (currentState) {
-        currentState = { ...currentState, hmeGenerated: String(msg.hme || '') };
-        renderState(currentState);
-      }
-    }
     else if (msg.type === 'error') showStatus(msg.message);
     else if (msg.type === 'pin-ready') {
       pinMode = true;

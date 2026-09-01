@@ -286,7 +286,7 @@ const findExistingAliasForHost = (emails: HmeEmail[], host: string): HmeEmail | 
 // an async onMessage listener that resolves undefined can still race another listener's
 // response channel in Chromium.
 browser.runtime.onMessage.addListener((uncastedMessage: unknown, sender: browser.Runtime.MessageSender) => {
-  const message = uncastedMessage as { type?: string; hme?: string; wantAlias?: boolean };
+  const message = uncastedMessage as { type?: string; wantAlias?: boolean };
   if (typeof message?.type !== 'string' || !message.type.startsWith('hme:')) return undefined;
 
   return (async () => {
@@ -324,34 +324,6 @@ browser.runtime.onMessage.addListener((uncastedMessage: unknown, sender: browser
     const clientState = await getBrowserStorageValue('clientState');
     if (!clientState) return { ok: false, error: tr('Sign in to iCloud.com to use Hide My Email.', '请登录 iCloud.com 以使用隐藏邮件地址。') };
     const client = new ICloudClient(clientState.setupUrl, clientState.webservices, clientState.dsid);
-
-    if (message.type === 'hme:generate') {
-      try {
-        if (!(await client.isAuthenticated())) {
-          performDeauthSideEffects();
-          return { ok: false, error: tr('Your iCloud session expired. Sign in to iCloud.com again.', '你的 iCloud 会话已过期，请重新登录 iCloud.com。') };
-        }
-        const hme = await new PremiumMailSettings(client).generateHme();
-        return { ok: true, hme };
-      } catch (error) {
-        return { ok: false, error: String(error) };
-      }
-    }
-
-    if (message.type === 'hme:reserve') {
-      try {
-        if (!message.hme) return { ok: false, error: tr('No private address was provided.', '未提供隐藏邮件地址。') };
-        let label = 'Private Address';
-        try {
-          if (sender.url) label = new URL(sender.url).hostname || label;
-        } catch {}
-        const result = await new PremiumMailSettings(client).reserveHme(message.hme, label);
-        inlineAliasCache = undefined;
-        return { ok: true, hme: result.hme };
-      } catch (error) {
-        return { ok: false, error: String(error) };
-      }
-    }
 
     if (message.type === 'hme:create-for-site') {
       try {

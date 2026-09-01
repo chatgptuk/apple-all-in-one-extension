@@ -61,3 +61,21 @@ test('smart signup keeps alias discovery in the extension and requires a chooser
   assert.match(inline, /send\('smart-signup'/);
   assert.match(inline, /send\('use-apple-sign-in'/);
 });
+
+test('saved logins suppress signup extras and standalone inline Hide My Email is removed', () => {
+  const background = readProjectFile('src/pages/Background/index.ts');
+  const content = readProjectFile('src/passwords/content.js');
+  const inline = readProjectFile('src/passwords/inline.js');
+
+  const savedLoginBranch = inline.indexOf('if (state.logins?.length)');
+  const signupBranch = inline.indexOf('let hasSection = appendSmartSignup(state)');
+  assert.ok(savedLoginBranch >= 0 && savedLoginBranch < signupBranch);
+  assert.match(content, /canSmartSignup: !hasSavedLogins/);
+  assert.match(content, /hasAppleSignIn: !hasSavedLogins/);
+  assert.match(content, /canGenerate: !hasSavedLogins/);
+  assert.doesNotMatch(inline, /makeHideEmailRow|hme-(?:fill-existing|generate|use)/);
+  assert.doesNotMatch(content, /msg\.type === 'hme-(?:fill-existing|generate|use)'/);
+  assert.doesNotMatch(background, /message\.type === 'hme:(?:generate|reserve)'/);
+  assert.match(background, /contextMenus\.onClicked\.addListener/);
+  assert.match(background, /message\.type === 'hme:create-for-site'/);
+});
