@@ -6,7 +6,7 @@
 
 > **v1.2.6:** Toolbar startup is isolated behind a small bootstrap that repairs global/per-tab action state, while opening the popup can automatically begin the Apple Passwords access-code flow.
 
-# Apple All-In-One v1.2.14
+# Apple All-In-One v1.2.15
 
 **Apple All-In-One** is an independent Chromium extension that brings several Apple account features into one place: Apple Passwords, passkeys, verification codes, and iCloud+ Hide My Email.
 
@@ -213,3 +213,11 @@ The Apple Passwords access-code field in the toolbar popup automatically verifie
 - Adds an on-demand recent-mail list to each Hide My Email address without persisting message previews.
 - Detects 4–8 digit verification codes in recent mail subjects/previews and offers one-click copy.
 - Adds Smart Signup to the isolated inline chooser with Sign in with Apple detection, existing-alias reuse, explicit alias creation, and a prepared strong password that survives multi-step registration forms for up to ten minutes in content-script memory.
+
+### v1.2.15 password lookup reliability
+
+- Keeps Apple Passwords lookup independent from the slower existing-alias discovery used by Smart Signup.
+- Distinguishes native lookup errors from a genuine empty vault and prevents stale failures from overwriting newer results.
+- Retries a transient empty native-helper response once and accepts known response-key variants across helper versions.
+- Repairs both Passwords and Hide My Email content scripts in tabs that were already open when the extension was reloaded.
+- Reopens the secure chooser when a trusted click lands on a login field that the page had already focused.

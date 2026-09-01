@@ -470,21 +470,62 @@ const PasswordsView = () => {
   const [host, setHost] = useState(tr('This Website', '此网站'));
   const [logins, setLogins] = useState<PasswordLogin[]>([]);
   const [otps, setOtps] = useState<OtpItem[]>([]);
+  const [siteItemsLoading, setSiteItemsLoading] = useState(false);
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const pinVerifyInFlight = useRef(false);
+  const siteLoadSequence = useRef(0);
+  const displayedSiteKey = useRef('');
 
   const loadSiteItems = async () => {
+    const sequence = ++siteLoadSequence.current;
     const tab = await getActiveTabForPopup();
-    try { if (tab?.url) setHost(new URL(tab.url).hostname); } catch { setHost(tr('This Website', '此网站')); }
-    const [loginResult, otpResult] = await Promise.all([
-      sendPasswordMessage<{ ok?: boolean; logins?: PasswordLogin[]; error?: string }>({ type: 'getLogins' }),
-      sendPasswordMessage<{ ok?: boolean; items?: OtpItem[] }>({ type: 'getOtpItems' }),
-    ]);
-    setLogins(loginResult?.ok ? loginResult.logins || [] : []);
-    setOtps(otpResult?.ok ? otpResult.items || [] : []);
-    if (loginResult && !loginResult.ok && loginResult.error) setError(loginResult.error);
+    const siteKey = `${tab?.id ?? 'none'}:${tab?.url || ''}`;
+    if (displayedSiteKey.current !== siteKey) {
+      displayedSiteKey.current = siteKey;
+      setLogins([]);
+      setOtps([]);
+    }
+    try {
+      if (tab?.url) setHost(new URL(tab.url).hostname);
+      else setHost(tr('This Website', '此网站'));
+    } catch {
+      setHost(tr('This Website', '此网站'));
+    }
+    setSiteItemsLoading(true);
+    setError(undefined);
+
+    try {
+      const [loginResult, otpResult] = await Promise.all([
+        sendPasswordMessage<{ ok?: boolean; logins?: PasswordLogin[]; error?: string }>({ type: 'getLogins' }),
+        sendPasswordMessage<{ ok?: boolean; items?: OtpItem[]; error?: string }>({ type: 'getOtpItems' }),
+      ]);
+      if (sequence !== siteLoadSequence.current) return;
+
+      const currentTab = await getActiveTabForPopup();
+      if (currentTab?.id !== tab?.id || currentTab?.url !== tab?.url) return;
+
+      if (loginResult?.ok) {
+        setLogins(loginResult.logins || []);
+      } else {
+        setError(loginResult?.error || tr(
+          'Could not query Apple Passwords. Your saved items were not reported as empty.',
+          '无法查询 Apple 密码；扩展不会再把查询失败显示成“没有已保存项目”。'
+        ));
+      }
+
+      if (otpResult?.ok) {
+        setOtps(otpResult.items || []);
+      } else if (loginResult?.ok) {
+        setError(otpResult?.error || tr(
+          'Could not query verification codes.',
+          '无法查询验证码。'
+        ));
+      }
+    } finally {
+      if (sequence === siteLoadSequence.current) setSiteItemsLoading(false);
+    }
   };
 
   const refreshState = async () => {
@@ -693,7 +734,8 @@ const PasswordsView = () => {
       <div className="password-site-heading"><span>{tr('This Website', '此网站')}</span><strong>{host}</strong><button type="button" className="hme-circle-action" onClick={async () => { await sendPasswordMessage({ type: 'clearCache' }); await loadSiteItems(); }}><Symbol name="refresh" size={16} /></button></div>
       {logins.length > 0 && <><div className="hme-section-label">{tr('Saved Passwords', '已保存的密码')}</div><section className="hme-group unified-password-list">{logins.map((login, index) => <button type="button" key={`${login.username}-${index}`} onClick={() => fillLogin(login)} disabled={!!busy}><span className="hme-symbol-tile is-purple"><Symbol name="key" size={17} /></span><span className="unified-row-copy"><strong>{login.username || tr('(no username)', '(无用户名)')}</strong><small>{tr('Fill from Apple Passwords', '从 Apple 密码填充')}</small></span>{busy === `login:${login.username || ''}` ? <Spinner compact /> : <Symbol name="chevron-right" size={15} />}</button>)}</section></>}
       {otps.length > 0 && <><div className="hme-section-label">{tr('Verification Codes', '验证码')}</div><section className="hme-group unified-password-list">{otps.map((item, index) => <button type="button" key={`${item.username}-${index}`} onClick={() => fillOtp(item)} disabled={!!busy}><span className="hme-symbol-tile is-blue"><Symbol name="code" size={17} /></span><span className="unified-row-copy"><strong>{item.username || tr('Verification Code', '验证码')}</strong><small>{item.domain ? `${tr('For', '用于')} ${item.domain}` : tr('Fill current code', '填充当前验证码')}</small></span>{busy === `otp:${item.username || ''}` ? <Spinner compact /> : <Symbol name="chevron-right" size={15} />}</button>)}</section></>}
-      {!logins.length && !otps.length && <section className="hme-group unified-empty-group"><span className="hme-symbol-tile is-purple"><Symbol name="key" size={18} /></span><div><strong>{tr('No saved items for this website', '此网站没有已保存项目')}</strong><span>{tr('Click a sign-in field to use the secure inline chooser.', '点击登录输入框即可使用安全的内联选择器。')}</span></div></section>}
+      {siteItemsLoading && !logins.length && !otps.length && <div className="hme-loading-state"><Spinner /> <span>{tr('Checking Apple Passwords…', '正在查询 Apple 密码…')}</span></div>}
+      {!siteItemsLoading && !error && !logins.length && !otps.length && <section className="hme-group unified-empty-group"><span className="hme-symbol-tile is-purple"><Symbol name="key" size={18} /></span><div><strong>{tr('No saved items for this website', '此网站没有已保存项目')}</strong><span>{tr('Click a sign-in field to use the secure inline chooser.', '点击登录输入框即可使用安全的内联选择器。')}</span></div></section>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
       <button className="hme-plain-link unified-lock" type="button" onClick={async () => {
         await sendPasswordMessage({ type: 'disconnect' });

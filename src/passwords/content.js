@@ -69,6 +69,7 @@ let lastSaveKey = '';
 let lastSaveAt = 0;
 let lastGesture = { at: 0, kind: '', target: null };
 let offerSeq = 0;
+let aliasLookupSeq = 0;
 
 let uiHost = null;
 let uiShadow = null;
@@ -456,7 +457,20 @@ function noteGesture(e, kind) {
   lastGesture = { at: Date.now(), kind, target: pathTarget, x: Number(e.clientX) || 0, y: Number(e.clientY) || 0 };
 }
 
-document.addEventListener('pointerdown', (e) => noteGesture(e, 'pointer'), true);
+document.addEventListener('pointerdown', (e) => {
+  noteGesture(e, 'pointer');
+  // Clicking an input that is already focused does not emit another focusin event. This is
+  // common on pages that autofocus the username field before document_idle installs us.
+  // Re-open only when this trusted pointer gesture actually lands on the active field.
+  const field = deepActiveElement();
+  if (!(field instanceof HTMLInputElement) || !focusWasUserDriven(field)) return;
+  const otp = isOtpField(field);
+  const signupField = isHideEmailField(field) && isSignupContext(field);
+  if (!otp && !isLoginField(field) && !signupField) return;
+  Promise.resolve().then(() => {
+    if (field === deepActiveElement()) openForField(field);
+  });
+}, true);
 document.addEventListener('keydown', (e) => noteGesture(e, 'keyboard'), true);
 
 function focusWasUserDriven(field) {
@@ -544,6 +558,7 @@ function positionUi(height = uiExpectedRect?.height || UI_DEFAULT_HEIGHT) {
 }
 
 function closeUi() {
+  aliasLookupSeq += 1;
   if (uiAuthTimer) clearTimeout(uiAuthTimer);
   uiAuthTimer = null;
   if (uiPort) {
@@ -595,10 +610,26 @@ function postUi(message) {
   try { uiPort?.postMessage(message); } catch {}
 }
 
+async function refreshExistingHme(anchor, token) {
+  const hme = await chrome.runtime
+    .sendMessage({ type: 'hme:inline-state', wantAlias: true })
+    .catch(() => null);
+  if (token !== aliasLookupSeq || uiAnchor !== anchor || !uiState || isOtpField(anchor)) return;
+  uiState = {
+    ...uiState,
+    canHideEmail: isHideEmailField(anchor) && !!hme?.ready,
+    canSmartSignup: isHideEmailField(anchor) && isSignupContext(anchor) && !!hme?.ready,
+    existingHme: hme?.existingHme || null,
+  };
+  postUi(uiState);
+}
+
 async function reloadUiState() {
-  if (!uiAnchor) return;
-  if (isOtpField(uiAnchor)) {
+  const anchor = uiAnchor;
+  if (!anchor) return;
+  if (isOtpField(anchor)) {
     const res = await chrome.runtime.sendMessage({ type: 'inlineOtpItems' }).catch(() => null);
+    if (uiAnchor !== anchor) return;
     uiState = {
       type: 'state',
       mode: 'otp',
@@ -610,15 +641,20 @@ async function reloadUiState() {
         domain: item.domain || '',
         source: item.source || '',
       })) : [],
+      lookupError: !res?.ok && !res?.locked
+        ? L('Verification-code lookup failed. Click the field again to retry.', '验证码查询失败，请再次点击输入框重试。')
+        : '',
       canGenerate: false,
       canUnlock: window === window.top,
     };
   } else {
-    const wantsAlias = isHideEmailField(uiAnchor);
+    const wantsAlias = isHideEmailField(anchor);
     const [res, hme] = await Promise.all([
       chrome.runtime.sendMessage({ type: 'inlineLogins' }).catch(() => null),
-      chrome.runtime.sendMessage({ type: 'hme:inline-state', wantAlias: wantsAlias }).catch(() => null),
+      // This is storage-only. Existing-alias discovery is a separate, non-blocking request below.
+      chrome.runtime.sendMessage({ type: 'hme:inline-state', wantAlias: false }).catch(() => null),
     ]);
+    if (uiAnchor !== anchor) return;
     uiState = {
       type: 'state',
       mode: 'password',
@@ -626,17 +662,24 @@ async function reloadUiState() {
       host: location.hostname,
       locked: !!(res?.ok && res.locked),
       logins: res?.ok && !res.locked ? (res.logins || []).map((l) => ({ username: l.username || '' })) : [],
-      canGenerate: isNewPasswordField(uiAnchor),
+      lookupError: !res?.ok && !res?.locked
+        ? L('Apple Passwords lookup failed. Click the field again to retry.', 'Apple 密码查询失败，请再次点击输入框重试。')
+        : '',
+      canGenerate: isNewPasswordField(anchor),
       canHideEmail: wantsAlias && !!hme?.ready,
-      canSmartSignup: wantsAlias && isSignupContext(uiAnchor) && !!hme?.ready,
+      canSmartSignup: wantsAlias && isSignupContext(anchor) && !!hme?.ready,
       hasAppleSignIn: !!appleSignInControl(),
-      existingHme: hme?.existingHme || null,
+      existingHme: null,
       pendingPassword: preparedPasswordForThisSite(),
       hmeGenerated: '',
       canUnlock: window === window.top,
     };
   }
   postUi(uiState);
+  if (!isOtpField(anchor) && isHideEmailField(anchor)) {
+    const token = ++aliasLookupSeq;
+    refreshExistingHme(anchor, token).catch(() => {});
+  }
 }
 
 async function handleUiAction(msg) {
@@ -851,7 +894,8 @@ async function openForField(field) {
     ? [await chrome.runtime.sendMessage({ type: 'inlineOtpItems' }).catch(() => null), null]
     : await Promise.all([
         chrome.runtime.sendMessage({ type: 'inlineLogins' }).catch(() => null),
-        chrome.runtime.sendMessage({ type: 'hme:inline-state', wantAlias: isHideEmailField(field) }).catch(() => null),
+        // Keep the password lookup independent from the potentially slow iCloud alias list.
+        chrome.runtime.sendMessage({ type: 'hme:inline-state', wantAlias: false }).catch(() => null),
       ]);
   if (seq !== offerSeq || field !== deepActiveElement()) return;
   const state = otp ? {
@@ -864,6 +908,9 @@ async function openForField(field) {
       domain: item.domain || '',
       source: item.source || '',
     })) : [],
+    lookupError: !res?.ok && !res?.locked
+      ? L('Verification-code lookup failed. Click the field again to retry.', '验证码查询失败，请再次点击输入框重试。')
+      : '',
     canGenerate: false,
     canUnlock: window === window.top,
   } : {
@@ -872,18 +919,25 @@ async function openForField(field) {
     host: location.hostname,
     locked: !!(res?.ok && res.locked),
     logins: res?.ok && !res.locked ? (res.logins || []).map((l) => ({ username: l.username || '' })) : [],
+    lookupError: !res?.ok && !res?.locked
+      ? L('Apple Passwords lookup failed. Click the field again to retry.', 'Apple 密码查询失败，请再次点击输入框重试。')
+      : '',
     canGenerate: isNewPasswordField(field),
     canHideEmail: isHideEmailField(field) && !!hme?.ready,
     canSmartSignup: isHideEmailField(field) && isSignupContext(field) && !!hme?.ready,
     hasAppleSignIn: !!appleSignInControl(),
-    existingHme: hme?.existingHme || null,
+    existingHme: null,
     pendingPassword: preparedPasswordForThisSite(),
     hmeGenerated: '',
     canUnlock: window === window.top,
   };
   const hasItems = otp ? state.otpItems.length > 0 : state.logins.length > 0;
-  if (!state.locked && !hasItems && !state.canGenerate && !state.canHideEmail && !state.hasAppleSignIn) return;
+  if (!state.locked && !hasItems && !state.lookupError && !state.canGenerate && !state.canHideEmail && !state.hasAppleSignIn) return;
   buildSecureUi(field, state);
+  if (!otp && isHideEmailField(field) && hme?.ready) {
+    const token = ++aliasLookupSeq;
+    refreshExistingHme(field, token).catch(() => {});
+  }
 }
 
 function deepActiveElement() {

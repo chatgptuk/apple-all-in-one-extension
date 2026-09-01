@@ -12,23 +12,30 @@ async function repairOneTab(tabId) {
   try { await chrome.action.setPopup({ tabId, popup: TOOLBAR_POPUP }); } catch (_) {}
 }
 
-async function injectHmeContentScript(tabId, frameId) {
+const REPAIR_CONTENT_SCRIPTS = [
+  'passwordsContent.bundle.js',
+  'contentScript.bundle.js',
+];
+
+async function injectContentScripts(tabId, frameId) {
   if (!Number.isInteger(tabId)) return;
-  try {
-    await chrome.scripting.executeScript({
-      target: {
-        tabId,
-        ...(Number.isInteger(frameId) ? { frameIds: [frameId] } : { allFrames: true }),
-      },
-      files: ['contentScript.bundle.js'],
-    });
-  } catch (_) {}
+  await Promise.all(REPAIR_CONTENT_SCRIPTS.map(async (file) => {
+    try {
+      await chrome.scripting.executeScript({
+        target: {
+          tabId,
+          ...(Number.isInteger(frameId) ? { frameIds: [frameId] } : { allFrames: true }),
+        },
+        files: [file],
+      });
+    } catch (_) {}
+  }));
 }
 
 async function repairExistingContentScripts() {
   try {
     const tabs = await chrome.tabs.query({});
-    await Promise.all(tabs.map((tab) => injectHmeContentScript(tab.id)));
+    await Promise.all(tabs.map((tab) => injectContentScripts(tab.id)));
   } catch (_) {}
 }
 
@@ -55,6 +62,7 @@ try {
 // Repeat toolbar repair for lifecycle events and newly created/updated tabs so a stale
 // tab-specific popup override from an older dev build cannot survive.
 repairToolbarAction({ repairExistingTabs: true }).catch(() => {});
+repairExistingContentScripts().catch(() => {});
 chrome.runtime.onInstalled.addListener(() => {
   repairToolbarAction({ repairExistingTabs: true }).catch(() => {});
   repairExistingContentScripts().catch(() => {});

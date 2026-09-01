@@ -432,6 +432,14 @@ function renderState(state) {
     return;
   }
   if (state.mode === 'otp') {
+    if (state.lookupError) {
+      const error = document.createElement('div');
+      error.className = 'empty error';
+      error.textContent = state.lookupError;
+      content.appendChild(error);
+      reportHeight();
+      return;
+    }
     if (state.otpItems?.length) {
       const label = document.createElement('div');
       label.className = 'section-label';
@@ -448,6 +456,13 @@ function renderState(state) {
     return;
   }
   let hasSection = appendSmartSignup(state);
+  if (state.lookupError) {
+    const error = document.createElement('div');
+    error.className = 'empty error';
+    error.textContent = state.lookupError;
+    content.appendChild(error);
+    hasSection = true;
+  }
   if (state.logins?.length) {
     if (hasSection) { const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div); }
     const label = document.createElement('div');

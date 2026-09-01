@@ -313,8 +313,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               locked: false,
               logins: uniqueByUsername(orderByMru(registrableHost(frameUrl), logins)),
             });
-          } catch {
-            sendResponse({ ok: true, locked: false, logins: [] });
+          } catch (e) {
+            sendResponse({
+              ok: false,
+              locked: false,
+              error: `Apple Passwords lookup failed: ${String(e?.message ?? e)}`,
+            });
           }
           break;
         }
@@ -339,8 +343,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 source: item.source || "",
               })),
             });
-          } catch {
-            sendResponse({ ok: true, locked: false, items: [] });
+          } catch (e) {
+            sendResponse({
+              ok: false,
+              locked: false,
+              error: `Verification-code lookup failed: ${String(e?.message ?? e)}`,
+            });
           }
           break;
         }
@@ -602,8 +610,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // real active tab's URL, never caller-supplied
           const tab = await activeTab();
           if (!tab?.url) return sendResponse({ ok: false, error: "no active tab" });
-          const logins = await client.getLoginNamesForURL(tab.id, tab.url);
-          sendResponse({ ok: true, logins: uniqueByUsername(orderByMru(registrableHost(tab.url), logins)) });
+          await ensureConnected();
+          if (!client.ready) return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
+          try {
+            const logins = await client.getLoginNamesForURL(tab.id, tab.url);
+            sendResponse({ ok: true, logins: uniqueByUsername(orderByMru(registrableHost(tab.url), logins)) });
+          } catch (e) {
+            sendResponse({ ok: false, error: `Apple Passwords lookup failed: ${String(e?.message ?? e)}` });
+          }
           break;
         }
 

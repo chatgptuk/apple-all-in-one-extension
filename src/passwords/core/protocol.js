@@ -19,6 +19,7 @@ import {
 const NATIVE_HOST = "com.apple.passwordmanager";
 const BROWSER_NAME = "Chrome";
 const VERSION = "1.0";
+const EMPTY_LOOKUP_RETRY_MS = 120;
 // how long we still trust a code the Mac put on screen. past this we re-prompt rather than
 // verify against a challenge the user has probably lost track of
 const CHALLENGE_TTL_MS = 3 * 60_000;
@@ -57,6 +58,19 @@ export const State = {
 
 function jsonToBase64(obj) {
   return bytesToBase64(new TextEncoder().encode(JSON.stringify(obj)));
+}
+
+function queryEntries(response) {
+  const entries = response?.Entries ?? response?.entries;
+  return Array.isArray(entries) ? entries : [];
+}
+
+function entryUsername(entry) {
+  return entry?.USR ?? entry?.username ?? entry?.user ?? "";
+}
+
+function entryPassword(entry) {
+  return entry?.PWD ?? entry?.password;
 }
 
 export class ApplePasswords {
@@ -337,17 +351,30 @@ export class ApplePasswords {
     if (!this.ready) throw new Error("not unlocked");
     const { hostname } = new URL(url);
     return this._withLock(async () => {
-      const res = await this._encryptedQuery(
-        Command.GET_LOGIN_NAMES_FOR_URL,
-        tabId,
-        hostname,
-        { ACT: Action.GHOST_SEARCH, URL: hostname },
-        5000,
-      );
-      if (res.STATUS === QueryStatus.Success)
-        return (res.Entries ?? []).map((e) => ({ username: e.USR, sites: e.sites }));
-      if (res.STATUS === QueryStatus.NoResults) return [];
-      throw queryStatusError(res.STATUS);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const res = await this._encryptedQuery(
+          Command.GET_LOGIN_NAMES_FOR_URL,
+          tabId,
+          hostname,
+          { ACT: Action.GHOST_SEARCH, URL: hostname },
+          5000,
+        );
+        if (res.STATUS === QueryStatus.Success) {
+          const entries = queryEntries(res);
+          if (entries.length || attempt === 1) {
+            return entries.map((e) => ({
+              username: entryUsername(e),
+              sites: e.sites ?? e.SITES,
+            }));
+          }
+        } else if (res.STATUS !== QueryStatus.NoResults) {
+          throw queryStatusError(res.STATUS);
+        } else if (attempt === 1) {
+          return [];
+        }
+        await new Promise((resolve) => setTimeout(resolve, EMPTY_LOOKUP_RETRY_MS));
+      }
+      return [];
     });
   }
 
@@ -365,10 +392,14 @@ export class ApplePasswords {
         null, // no timeout, helper may require Touch ID here
       );
       if (res.STATUS === QueryStatus.Success) {
-        const e = (res.Entries ?? [])[0];
+        const e = queryEntries(res)[0];
         if (!e) return undefined;
         // apple's reply is USR/PWD/customTitle/highLevelDomain/sites - no note or OTP seed (verified), cant surface those
-        return { username: e.USR, password: e.PWD, sites: e.sites };
+        return {
+          username: entryUsername(e),
+          password: entryPassword(e),
+          sites: e.sites ?? e.SITES,
+        };
       }
       if (res.STATUS === QueryStatus.NoResults) return undefined;
       throw queryStatusError(res.STATUS);
