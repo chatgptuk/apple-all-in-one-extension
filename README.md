@@ -140,42 +140,9 @@ Apple All-In-One combines two independently licensed upstream projects:
 
 ## License
 
-This repository is a **multi-license distribution**:
+Project-authored contributions and Open Passwords-derived code use the Apache License 2.0. Code retained from the iCloud Hide My Email Browser Extension remains under its original MIT License.
 
-- original code and modifications first authored for Apple All-In-One: **Apache License 2.0**;
-- Open Passwords-derived code: **Apache License 2.0**, with its NOTICE and attribution retained;
-- iCloud Hide My Email Browser Extension-derived code: **MIT License**, with the original copyright and permission notice retained.
-
-Redistributors must comply with every license that applies to the files they copy. Start with the [licensing map](./LICENSING.md), then retain:
-
-- [Apache-2.0 text](./LICENSE)
-- [Hide My Email MIT text](./LICENSES/Hide-My-Email-MIT.txt)
-- [Open Passwords NOTICE](./OPEN_PASSWORDS_NOTICE)
-- [Third-party notices](./THIRD_PARTY_NOTICES.md)
-
-The open-source licenses cover repository code only. They do **not** grant rights to Apple's trademarks, icons, software, native helper, services, accounts, APIs, extension identity, patents, or distribution channels.
-
-## Trademark, platform, and distribution risk
-
-The current repository is useful for source study and personal sideloading, but several issues should be resolved before any public or commercial distribution:
-
-| Area                                | Current assessment           | Why it matters                                                                                                                                                                                                                                                                        |
-| ----------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Upstream source licenses            | Manageable                   | Apache-2.0 and MIT both permit modification and redistribution when their license, attribution, and notice obligations are retained. A file-level provenance/modification-notice audit is still recommended before a formal release.                                                  |
-| Product name                        | High risk for public release | Apple's published trademark guidelines say an Apple word mark should not be part of a third-party product or service name. The current name should therefore be treated as a development name and replaced with a neutral brand before public distribution.                           |
-| Icon and visual identity            | Medium to high               | A custom icon still needs to be clearly distinct from Apple-owned icons and trade dress. A public build should use an independently branded icon and less Apple-like presentation.                                                                                                    |
-| Fixed manifest key and extension ID | High                         | The key deliberately reproduces the ID accepted by Apple's native helper. Open Passwords itself documents this as a personal unpacked-extension workaround and says it cannot be published to the Chrome Web Store under that identity. Technical compatibility is not authorization. |
-| Undocumented Apple interfaces       | Medium to high               | The native-helper protocol and private iCloud web endpoints are unsupported and may change. Their use may also be restricted by Apple agreements applicable to a particular developer, account, service, or jurisdiction.                                                             |
-| Chrome Web Store review             | High in the current form     | Store policy prohibits impersonation, misleading branding, and third-party IP infringement. The fixed Apple identity and current product branding would require resolution before submission.                                                                                         |
-
-Relevant primary sources:
-
-- [Apple Guidelines for Using Apple Trademarks and Copyrights](https://www.apple.com/legal/intellectual-property/guidelinesfor3rdparties.html)
-- [Chrome Web Store: Impersonation & Intellectual Property](https://developer.chrome.com/docs/webstore/program-policies/impersonation-and-intellectual-property)
-- [Chrome extension manifest `key` documentation](https://developer.chrome.com/docs/extensions/reference/manifest/key)
-- [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
-
-Before a public release, the conservative route is to adopt a neutral product name and icon, complete a file-level copyright/provenance audit, publish an accurate privacy policy, and either obtain written authorization for the Apple-dependent integration or ship a store build that removes unsupported identity/private-interface dependencies. Consult a qualified lawyer for a definitive assessment; this repository documentation is not legal advice.
+See the [licensing map](./LICENSING.md), [Apache-2.0 license](./LICENSE), [MIT license](./LICENSES/Hide-My-Email-MIT.txt), [Open Passwords NOTICE](./OPEN_PASSWORDS_NOTICE), and [third-party notices](./THIRD_PARTY_NOTICES.md).
 
 ## Known limitations
 

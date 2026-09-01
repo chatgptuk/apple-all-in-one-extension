@@ -142,46 +142,11 @@ npm run watch
 1. [Open Passwords](https://github.com/ManiForoughi2/open-passwords) 提供 Apple 密码原生通信、加密协议、密码查询与保存流程、通行密钥组件、OTP 输入框排除逻辑，以及最初的安全网页内选择器。Apple All-In-One 自行实现了已保存验证码的发现、按需读取、主界面/网页选择建议和带来源校验的填充；这些 OTP/验证码管理功能并非由 Open Passwords 提供。
 2. [iCloud Hide My Email Browser Extension](https://github.com/dedoussis/icloud-hide-my-email-browser-extension) 提供原始扩展框架和隐藏邮件地址私有 Web 服务集成。重新设计的地址管理器、两分钟列表缓存、网站识别、近期邮件活动与预览、直接删除、批量管理、私密注册和整合界面，是后续项目工作。
 
-## 到底应该用什么许可证
+## 开源许可
 
-建议并在本仓库中采用的方案是：**你自己新增的代码和改动使用 Apache License 2.0，上游代码继续遵守各自原许可证。** 所以整个仓库是一个多许可证发行包，而不是所有文件都被强行改成同一种许可证。
+本项目新增代码及来自 Open Passwords 的代码使用 Apache License 2.0；从 iCloud Hide My Email Browser Extension 保留的代码继续使用原 MIT License。
 
-- Apple All-In-One 首次新增的代码和改动：**Apache License 2.0**；
-- 来自 Open Passwords 的部分：继续使用 **Apache License 2.0**，保留原 NOTICE 和署名；
-- 来自 iCloud Hide My Email Browser Extension 的部分：继续使用 **MIT License**，保留 Dimitrios Dedoussis 的版权和许可声明。
-
-如果他人复制或发布这个仓库，需要根据实际使用的文件同时履行相应许可证义务。完整边界见[许可证适用说明](./LICENSING.md)，并应保留：
-
-- [Apache-2.0 全文](./LICENSE)
-- [隐藏邮件地址上游的 MIT 全文](./LICENSES/Hide-My-Email-MIT.txt)
-- [Open Passwords NOTICE](./OPEN_PASSWORDS_NOTICE)
-- [第三方项目声明](./THIRD_PARTY_NOTICES.md)
-
-这些开源许可证只授权仓库代码，不授权 Apple 的商标、图标、软件、原生辅助程序、在线服务、账号、API、扩展身份、专利或发布渠道。
-
-## 有没有侵权或上架风险
-
-不能简单回答“完全没有”。就目前的代码和命名来看，开源代码本身的许可证问题比较容易处理，真正需要重视的是 Apple 品牌、扩展身份和非公开接口。
-
-| 风险点                      | 当前判断         | 说明                                                                                                                                                                  |
-| --------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 上游代码版权                | 可控             | Apache-2.0 与 MIT 都允许修改和再发布，但必须保留许可证、版权和 NOTICE。正式发布前仍建议做一次逐文件来源和修改声明审计。                                               |
-| `Apple All-In-One` 这个名称 | 公开发布风险较高 | Apple 的商标使用指南明确限制第三方把 Apple 商标放进产品或服务名称。免责声明有帮助，但不能自动消除名称本身的风险。公开发布前应换成中性品牌名。                         |
-| 图标和界面风格              | 中到较高         | 即使图标是自己画的，也不能与 Apple 官方图标或整体视觉产生容易混淆的相似性。公开版本应使用更独立的图标和品牌视觉。                                                     |
-| 固定 Manifest 公钥与扩展 ID | 风险较高         | 这个公钥让扩展获得 Apple 原生辅助程序接受的固定 ID。Open Passwords 上游也明确把它定位为个人侧载方案，并说明无法用该身份发布到 Chrome 应用商店。能工作不代表得到授权。 |
-| Apple 非公开接口            | 中到较高         | 原生辅助协议和 iCloud 私有 Web 接口没有公开稳定性承诺，Apple 随时可能修改；具体使用还可能受到适用于你的开发者协议、账号条款、服务条款和所在司法辖区法律的限制。       |
-| Chrome 应用商店审核         | 当前形态风险较高 | 商店政策禁止冒充、误导性品牌和侵犯第三方知识产权。当前固定 Apple 扩展身份与项目命名在提交前必须解决。                                                                 |
-
-可核对的官方资料：
-
-- [Apple：第三方使用 Apple 商标与版权的指南](https://www.apple.com/legal/intellectual-property/guidelinesfor3rdparties.html)
-- [Chrome 应用商店：冒充与知识产权政策](https://developer.chrome.com/docs/webstore/program-policies/impersonation-and-intellectual-property)
-- [Chrome 扩展 Manifest `key` 官方说明](https://developer.chrome.com/docs/extensions/reference/manifest/key)
-- [Apache License 2.0 全文](https://www.apache.org/licenses/LICENSE-2.0)
-
-如果以后准备公开或商业发布，比较稳妥的路线是：换成不含 Apple 商标的独立名称；重新设计差异明显的图标和视觉；完成逐文件版权来源审计；准备准确的隐私政策和商店数据披露；对于依赖 Apple 身份或私有接口的部分，获得书面授权，或者在商店版中移除这些依赖。
-
-个人在自己设备上研究、构建和侧载，实际暴露通常比公开宣传、上架或商业销售低，但这并不是 Apple 的授权，也不是“零风险”结论。最终是否侵权取决于使用方式、发布地区、适用协议和具体呈现；正式发行前应让熟悉软件许可与商标的律师审核。这里提供的是项目风险说明，不构成法律意见。
+详细文件归属请参阅[许可证适用说明](./LICENSING.md)、[Apache-2.0 全文](./LICENSE)、[MIT 全文](./LICENSES/Hide-My-Email-MIT.txt)、[Open Passwords NOTICE](./OPEN_PASSWORDS_NOTICE)和[第三方项目声明](./THIRD_PARTY_NOTICES.md)。
 
 ## 已知限制
 
