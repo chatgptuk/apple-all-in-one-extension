@@ -76,7 +76,8 @@
     "scripting",
     "contextMenus",
     "webRequest",
-    "notifications"
+    "notifications",
+    "favicon"
   ],
   "host_permissions": [
     "*://*/*",

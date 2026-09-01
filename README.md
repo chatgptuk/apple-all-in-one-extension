@@ -1,3 +1,7 @@
+<p align="right">
+  <strong>English</strong> · <a href="./README.zh-CN.md">简体中文</a>
+</p>
+
 > **v1.2.6.1:** TypeScript hotfix for the automatic Apple Passwords connection flow. The popup state variable is explicitly typed as the full PasswordState union so a valid `unlocked` response from the native helper no longer fails typecheck/build.
 
 > **v1.2.6:** Toolbar startup is isolated behind a small bootstrap that repairs global/per-tab action state, while opening the popup can automatically begin the Apple Passwords access-code flow.
@@ -182,3 +186,11 @@ The Apple Passwords access-code field in the toolbar popup automatically verifie
 - Removes Chrome `_favicon` as the final resolver fallback because Chrome may return a valid generic globe when no site favicon exists.
 - Adds conventional `favicon.png` and `favicon.svg` candidates.
 - Unresolved website icons now remain deterministic monograms across list and detail views.
+
+### v1.2.13 Chromium favicon repair
+
+- Supersedes the v1.2.9 direct favicon-candidate strategy above; that entry is retained as release history.
+- Uses Chromium's Manifest V3 `_favicon` API instead of downloading website HTML or guessing remote `/favicon.*` paths.
+- Supports icons declared on CDN or hashed asset URLs through Chromium's favicon store.
+- Filters Chromium's generic globe response so unresolved websites still keep deterministic monograms.
+- Avoids third-party CSS/font preload warnings being attributed to `popup.html`.

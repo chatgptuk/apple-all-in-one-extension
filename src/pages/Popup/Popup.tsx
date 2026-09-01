@@ -99,28 +99,14 @@ const faviconDomains = (domain: string): string[] => {
   return [...new Set(candidates)];
 };
 
-const SITE_ICON_TIMEOUT_MS = 2800;
+const SITE_ICON_SIZE = 64;
 const SITE_ICON_MAX_BYTES = 1024 * 1024;
+const GENERIC_FAVICON_PAGE_URL = 'https://apple-all-in-one.invalid/';
 const siteIconCache = new Map<string, string | null>();
 const siteIconRequests = new Map<string, Promise<string | null>>();
 
-const withFetchTimeout = async (url: string): Promise<Response | null> => {
-  const controller = new AbortController();
-  const timeoutId = globalThis.setTimeout(() => controller.abort(), SITE_ICON_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, {
-      credentials: 'omit',
-      redirect: 'follow',
-      cache: 'force-cache',
-      signal: controller.signal,
-    });
-    return response.ok ? response : null;
-  } catch {
-    return null;
-  } finally {
-    globalThis.clearTimeout(timeoutId);
-  }
-};
+type FaviconAsset = { blob: Blob; bytes: Uint8Array };
+let genericFaviconRequest: Promise<FaviconAsset | null> | undefined;
 
 const canDecodeImageBlob = (blob: Blob): Promise<boolean> =>
   new Promise((resolve) => {
@@ -144,31 +130,33 @@ const blobToDataUrl = (blob: Blob): Promise<string | null> =>
     reader.readAsDataURL(blob);
   });
 
-const fetchVerifiedIcon = async (url: string): Promise<string | null> => {
-  const response = await withFetchTimeout(url);
-  if (!response) return null;
+const faviconApiUrl = (pageUrl: string) => {
+  const url = new URL(browser.runtime.getURL('/_favicon/'));
+  url.searchParams.set('pageUrl', pageUrl);
+  url.searchParams.set('size', String(SITE_ICON_SIZE));
+  return url.toString();
+};
+
+const fetchFaviconAsset = async (pageUrl: string): Promise<FaviconAsset | null> => {
+  if (isFirefox) return null;
   try {
+    const response = await fetch(faviconApiUrl(pageUrl), { cache: 'force-cache' });
+    if (!response.ok) return null;
     const blob = await response.blob();
     if (!(await canDecodeImageBlob(blob))) return null;
-    // Cache a data URL rather than the remote URL itself. This means the UI only ever renders
-    // bytes that we already downloaded and successfully decoded, so CSP/CORS/site changes can
-    // never turn a previously-good favicon into Chrome's broken-image glyph.
-    return await blobToDataUrl(blob);
+    return { blob, bytes: new Uint8Array(await blob.arrayBuffer()) };
   } catch {
     return null;
   }
 };
 
-const standardIconCandidates = (domain: string): string[] => [
-  `https://${domain}/favicon.ico`,
-  `https://${domain}/favicon.png`,
-  `https://${domain}/favicon.svg`,
-  `https://${domain}/apple-touch-icon.png`,
-  `https://www.${domain}/favicon.ico`,
-  `https://www.${domain}/favicon.png`,
-  `https://www.${domain}/favicon.svg`,
-  `https://www.${domain}/apple-touch-icon.png`,
-];
+const sameBytes = (left: Uint8Array, right: Uint8Array) =>
+  left.byteLength === right.byteLength && left.every((value, index) => value === right[index]);
+
+const genericFavicon = () => {
+  genericFaviconRequest ||= fetchFaviconAsset(GENERIC_FAVICON_PAGE_URL);
+  return genericFaviconRequest;
+};
 
 const resolveSiteIconUrl = async (domain: string): Promise<string | null> => {
   const cacheKey = domain;
@@ -179,22 +167,18 @@ const resolveSiteIconUrl = async (domain: string): Promise<string | null> => {
   const request = (async () => {
     const domains = faviconDomains(domain);
 
-    // Never fetch an arbitrary site's HTML document from the popup merely to discover icons.
-    // Document responses can advertise CSS preloads in HTTP Link headers; because the popup
-    // does not render that document, Chromium records each preload as an extension error.
-    // Direct icon requests preserve site branding without executing that document preload path.
-    for (const domain of domains) {
-      for (const candidate of standardIconCandidates(domain)) {
-        const verified = await fetchVerifiedIcon(candidate);
-        if (verified) return verified;
-      }
+    // Use Chromium's internal favicon store rather than fetching arbitrary site documents or
+    // guessed /favicon.* URLs. That preserves icons hosted on CDN/hashed paths and prevents
+    // third-party Link preload headers from being attributed to popup.html as extension errors.
+    const generic = await genericFavicon();
+    for (const candidateDomain of domains) {
+      const asset = await fetchFaviconAsset(`https://${candidateDomain}/`);
+      if (!asset || (generic && sameBytes(asset.bytes, generic.bytes))) continue;
+      return blobToDataUrl(asset.blob);
     }
 
-    // Do not fall back to Chrome's `_favicon` endpoint here. When Chrome has no real favicon
-    // for a page it can return a perfectly valid generic globe image. Because that image
-    // decodes successfully, the UI used to change from a deterministic monogram (for example
-    // "2" for the label "2025.6.30") to a globe a moment later. If the site itself does
-    // not expose a verifiable icon, keep the monogram instead.
+    // Chrome returns a generic globe for some unknown pages. Compare it against a guaranteed
+    // invalid hostname so unresolved aliases keep their deterministic monogram instead.
     return null;
   })();
 
