@@ -21,7 +21,12 @@ import {
 } from '../../storage';
 import { CONTEXT_MENU_ITEM_ID, signedOutCtaCopy } from '../Background/constants';
 import { isFirefox } from '../../browserUtils';
-import { getResolvedLanguage, tr } from '../../i18n';
+import {
+  getResolvedLanguage,
+  setLanguagePreference,
+  tr,
+  type LanguagePreference,
+} from '../../i18n';
 import { PopupState } from './stateMachine';
 import './Popup.css';
 
@@ -295,13 +300,90 @@ const ToolbarButton = ({
   onClick,
 }: {
   label: string;
-  icon: 'settings' | 'signout';
+  icon: 'globe' | 'settings' | 'signout';
   onClick: () => void;
 }) => (
   <button type="button" className="hme-toolbar-button" aria-label={label} title={label} onClick={onClick}>
     <Symbol name={icon} size={18} />
   </button>
 );
+
+const LANGUAGE_OPTIONS: Array<{ value: LanguagePreference; label: () => string }> = [
+  { value: 'auto', label: () => tr('Follow Browser', '跟随浏览器') },
+  { value: 'zh-CN', label: () => '中文' },
+  { value: 'en', label: () => 'English' },
+];
+
+const LanguageMenu = () => {
+  const [preference, , isLoading] = useBrowserStorageState('languagePreference', DEFAULT_STORE.languagePreference);
+  const [isOpen, setIsOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setIsOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsOpen(false);
+    };
+
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [isOpen]);
+
+  const chooseLanguage = async (next: LanguagePreference) => {
+    if (next === preference) {
+      setIsOpen(false);
+      return;
+    }
+    await setLanguagePreference(next);
+    window.location.reload();
+  };
+
+  const label = tr('Language', '语言');
+  return (
+    <div className="hme-language-control" ref={rootRef}>
+      <button
+        type="button"
+        className={cx('hme-toolbar-button', isOpen && 'is-active')}
+        aria-label={label}
+        title={label}
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
+        disabled={isLoading}
+        onClick={() => setIsOpen((open) => !open)}
+      >
+        <Symbol name="globe" size={18} />
+      </button>
+      {isOpen && (
+        <div className="hme-language-menu" role="menu" aria-label={label}>
+          {LANGUAGE_OPTIONS.map((option) => {
+            const selected = preference === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={cx('hme-language-option', selected && 'is-selected')}
+                role="menuitemradio"
+                aria-checked={selected}
+                onClick={() => void chooseLanguage(option.value)}
+              >
+                <span>{option.label()}</span>
+                {selected && <Symbol name="check" size={15} strokeWidth={2.2} />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const Header = ({
   subtitle,
@@ -321,6 +403,7 @@ const Header = ({
       </div>
     </div>
     <div className="hme-toolbar-actions">
+      <LanguageMenu />
       <ToolbarButton label={tr('Settings', '设置')} icon="settings" onClick={() => browser.runtime.openOptionsPage()} />
       {authenticated && onSignOut && <ToolbarButton label={tr('Sign out of iCloud', '退出 iCloud')} icon="signout" onClick={onSignOut} />}
     </div>

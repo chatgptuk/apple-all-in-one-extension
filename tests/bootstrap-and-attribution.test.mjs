@@ -61,6 +61,17 @@ test('popup favicon discovery uses Chromium storage without third-party requests
   assert.doesNotMatch(source, /new DOMParser\s*\(|\/favicon\.ico|\/favicon\.png|\/favicon\.svg|apple-touch-icon\.png/);
 });
 
+test('popup exposes the shared extension language preference', () => {
+  const source = readProjectFile('src/pages/Popup/Popup.tsx');
+
+  assert.match(source, /useBrowserStorageState\(\s*'languagePreference'/);
+  assert.match(source, /setLanguagePreference\(next\)/);
+  assert.match(source, /value: 'auto'/);
+  assert.match(source, /value: 'zh-CN'/);
+  assert.match(source, /value: 'en'/);
+  assert.match(source, /<LanguageMenu \/>/);
+});
+
 test('project documentation attributes OTP management to Apple All-In-One', () => {
   const readme = readProjectFile('README.md');
   const chineseReadme = readProjectFile('README.zh-CN.md');
