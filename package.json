@@ -8,6 +8,8 @@
     "build": "node utils/build.js",
     "prebuild:firefox": "rm -rf build",
     "build:firefox": "FIREFOX=true node utils/build.js",
+    "pretest": "npm run build",
+    "test": "node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "prettier": "prettier --write '**/*.{js,jsx,ts,tsx,json,css,md}'",
     "prettier:check": "prettier --check '**/*.{js,jsx,ts,tsx,json,css,md}'",

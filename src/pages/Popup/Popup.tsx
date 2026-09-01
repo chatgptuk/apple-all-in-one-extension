@@ -122,63 +122,6 @@ const withFetchTimeout = async (url: string): Promise<Response | null> => {
   }
 };
 
-const absoluteHttpUrl = (href: string | null | undefined, baseUrl: string): string | undefined => {
-  if (!href) return undefined;
-  try {
-    const url = new URL(href, baseUrl);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined;
-    return url.toString();
-  } catch {
-    return undefined;
-  }
-};
-
-const iconLinksFromHtml = (html: string, pageUrl: string): { icons: string[]; manifests: string[] } => {
-  try {
-    const document = new DOMParser().parseFromString(html, 'text/html');
-    const icons: string[] = [];
-    const manifests: string[] = [];
-
-    document.querySelectorAll('link[href]').forEach((node) => {
-      const link = node as HTMLLinkElement;
-      const rel = (link.getAttribute('rel') || '').toLowerCase().split(/\s+/).filter(Boolean);
-      const href = absoluteHttpUrl(link.getAttribute('href'), pageUrl);
-      if (!href) return;
-      if (rel.includes('manifest')) {
-        manifests.push(href);
-        return;
-      }
-      if (
-        rel.includes('icon') ||
-        rel.includes('shortcut') ||
-        rel.includes('apple-touch-icon') ||
-        rel.includes('apple-touch-icon-precomposed') ||
-        rel.includes('mask-icon')
-      ) {
-        icons.push(href);
-      }
-    });
-
-    return { icons: [...new Set(icons)], manifests: [...new Set(manifests)] };
-  } catch {
-    return { icons: [], manifests: [] };
-  }
-};
-
-const iconLinksFromManifest = async (manifestUrl: string): Promise<string[]> => {
-  const response = await withFetchTimeout(manifestUrl);
-  if (!response) return [];
-  try {
-    const manifest = (await response.json()) as { icons?: Array<{ src?: string; sizes?: string; purpose?: string }> };
-    const icons = (manifest.icons || [])
-      .map((icon) => absoluteHttpUrl(icon.src, manifestUrl))
-      .filter((url): url is string => Boolean(url));
-    return [...new Set(icons)];
-  } catch {
-    return [];
-  }
-};
-
 const canDecodeImageBlob = (blob: Blob): Promise<boolean> =>
   new Promise((resolve) => {
     if (!blob.size || blob.size > SITE_ICON_MAX_BYTES) return resolve(false);
@@ -227,48 +170,19 @@ const standardIconCandidates = (domain: string): string[] => [
   `https://www.${domain}/apple-touch-icon.png`,
 ];
 
-const resolveSiteIconUrl = async (site: { domain: string; url: string }): Promise<string | null> => {
-  const cacheKey = site.domain;
+const resolveSiteIconUrl = async (domain: string): Promise<string | null> => {
+  const cacheKey = domain;
   if (siteIconCache.has(cacheKey)) return siteIconCache.get(cacheKey) ?? null;
   const pending = siteIconRequests.get(cacheKey);
   if (pending) return pending;
 
   const request = (async () => {
-    const domains = faviconDomains(site.domain);
+    const domains = faviconDomains(domain);
 
-    // First inspect the page's own declarations. Many modern sites keep icons under hashed
-    // asset paths, so guessing /favicon.ico alone is not enough.
-    for (const domain of domains) {
-      // Try the canonical hostname first. A successful request may redirect to www or another
-      // canonical host, and response.url then gives us the correct base for relative icon URLs.
-      // Only try an explicit www hostname when the canonical request itself fails.
-      const canonical = `https://${domain}/`;
-      let pageResponse = await withFetchTimeout(canonical);
-      if (!pageResponse) pageResponse = await withFetchTimeout(`https://www.${domain}/`);
-      if (!pageResponse) continue;
-      try {
-        const contentType = pageResponse.headers.get('content-type') || '';
-        if (!contentType.includes('html')) continue;
-        const pageUrl = pageResponse.url || canonical;
-        const html = await pageResponse.text();
-        const discovered = iconLinksFromHtml(html, pageUrl);
-        for (const candidate of discovered.icons) {
-          const verified = await fetchVerifiedIcon(candidate);
-          if (verified) return verified;
-        }
-        for (const manifestUrl of discovered.manifests.slice(0, 2)) {
-          const manifestIcons = await iconLinksFromManifest(manifestUrl);
-          for (const candidate of manifestIcons) {
-            const verified = await fetchVerifiedIcon(candidate);
-            if (verified) return verified;
-          }
-        }
-      } catch {
-        // Try the next source.
-      }
-    }
-
-    // Then try conventional icon paths, exact host first and parent domains after it.
+    // Never fetch an arbitrary site's HTML document from the popup merely to discover icons.
+    // Document responses can advertise CSS preloads in HTTP Link headers; because the popup
+    // does not render that document, Chromium records each preload as an extension error.
+    // Direct icon requests preserve site branding without executing that document preload path.
     for (const domain of domains) {
       for (const candidate of standardIconCandidates(domain)) {
         const verified = await fetchVerifiedIcon(candidate);
@@ -339,7 +253,7 @@ const SiteIcon = ({
   useEffect(() => {
     if (!site || !shouldLoad) return;
     let cancelled = false;
-    resolveSiteIconUrl(site).then((src) => {
+    resolveSiteIconUrl(site.domain).then((src) => {
       if (!cancelled && src) setResolvedSrc(src);
     });
     return () => {

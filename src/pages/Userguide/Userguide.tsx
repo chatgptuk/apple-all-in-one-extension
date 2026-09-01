@@ -70,7 +70,7 @@ const Userguide = () => (
       <h2>{tr('What Is Unified', '统一后的功能')}</h2>
       <div className="guide-group">
         <FeatureRow icon="key" tone="purple" title={tr('Passwords', '密码')}>{tr('Fill and save credentials through the macOS Apple Passwords helper.', '通过 macOS Apple 密码辅助程序填写和保存登录凭据。')}</FeatureRow>
-        <FeatureRow icon="code" tone="purple" title={tr('Verification Codes', '验证码')}>{tr('Keep the v0.53 OTP field detection and autosuggest workflow.', '保留 v0.53 的 OTP 输入框识别与自动建议流程。')}</FeatureRow>
+        <FeatureRow icon="code" tone="purple" title={tr('Verification Codes', '验证码')}>{tr('Discover saved Apple Passwords verification codes and fill one only after you choose it.', '发现 Apple 密码中保存的验证码，并且只在你明确选择后填入。')}</FeatureRow>
         <FeatureRow icon="mail" tone="blue" title={tr('Hide My Email', '隐藏邮件地址')}>{tr('Create aliases from the same secure login-field chooser without a second extension popup.', '直接从同一个安全登录框选择器创建隐藏地址，不需要第二个扩展弹窗。')}</FeatureRow>
         <FeatureRow icon="aliases" tone="cyan" title={tr('Alias Manager', '地址管理')}>{tr('Search, copy, deactivate, reactivate, directly delete, or bulk-manage addresses.', '搜索、复制、停用、重新启用、直接删除或批量管理地址。')}</FeatureRow>
         <FeatureRow icon="clock" tone="green" title={tr('Recent Mail Activity', '近期收信活动')}>{tr('When forwarding to iCloud Mail, show cached last-received activity from a bounded recent Inbox scan.', '转发到 iCloud Mail 时，通过有限范围的近期收件箱扫描显示缓存的最后收信时间。')}</FeatureRow>

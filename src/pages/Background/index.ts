@@ -1,4 +1,4 @@
-// @ts-ignore -- vendored Open Passwords v0.53 JavaScript module
+// @ts-ignore -- vendored Open Passwords JavaScript module
 import '../../passwords/core/background.js';
 import {
   getBrowserStorageValue,
@@ -153,6 +153,50 @@ const sendContextMessage = async (
     console.debug('Could not reach Hide My Email context target', error);
     return undefined;
   }
+};
+
+const createContextNotification = async (message: string): Promise<void> => {
+  await browser.notifications
+    .create({
+      type: 'basic',
+      title: notificationTitleCopy(),
+      message,
+      iconUrl: 'icon-128.png',
+    })
+    .catch((error) => console.debug('Could not show Hide My Email notification', error));
+};
+
+const sendContextFeedback = async (
+  tab: browser.Tabs.Tab | undefined,
+  contextFrameId: number,
+  status: NonNullable<ActiveInputElementWriteData['status']>,
+  message: string
+): Promise<boolean> => {
+  const feedbackFrames = contextFrameId === 0 ? [0] : [0, contextFrameId];
+
+  for (const frameId of feedbackFrames) {
+    const response = await sendContextMessage(tab, frameId, {
+      status,
+      message,
+      fill: false,
+      copyToClipboard: false,
+    });
+    if (response?.ok) return true;
+  }
+
+  // Loading notifications would linger after the operation, so reserve the system-level
+  // fallback for the terminal result. This guarantees the user sees success/failure even
+  // on restricted pages where extension content scripts cannot run.
+  if (status !== 'loading') await createContextNotification(message);
+  return false;
+};
+
+const contextMenuErrorCopy = (error: unknown) => {
+  const detail = error instanceof Error ? error.message : String(error);
+  return tr(
+    `Could not create a private address. ${detail}`,
+    `无法创建隐藏邮件地址。${detail}`
+  );
 };
 
 const resolveTrustedICloudClient = async (): Promise<ICloudClient | undefined> => {
@@ -318,19 +362,30 @@ const setupContextMenu = async () => {
   // Apple Passwords native helper from onInstalled. Use cached state for the label only.
   // Keep the command enabled even without cached clientState so a right-click can lazily
   // re-discover an already trusted iCloud browser session.
+  const menuProperties = {
+    title: clientState ? signedInCtaCopy() : signedOutCtaCopy(),
+    enabled: true,
+    visible: resolvedOptions.autofill.contextMenu,
+  };
+
   try {
-    browser.contextMenus.create({
-      id: CONTEXT_MENU_ITEM_ID,
-      title: clientState ? signedInCtaCopy() : signedOutCtaCopy(),
-      contexts: ['editable'],
-      enabled: true,
-      visible: resolvedOptions.autofill.contextMenu,
-    });
-  } catch (error) {
-    console.debug('Could not create Hide My Email context menu', error);
+    await browser.contextMenus.update(CONTEXT_MENU_ITEM_ID, menuProperties);
+  } catch {
+    try {
+      browser.contextMenus.create({
+        id: CONTEXT_MENU_ITEM_ID,
+        contexts: ['editable'],
+        ...menuProperties,
+      });
+    } catch (error) {
+      console.debug('Could not create Hide My Email context menu', error);
+    }
   }
 };
 
+// Also repair the command whenever the service worker starts. This recovers automatically from
+// an older bootstrap failure that prevented the onInstalled listener from creating the item.
+setupContextMenu().catch(console.debug);
 browser.runtime.onInstalled.addListener(setupContextMenu);
 
 type OptionsStorageChange = {
@@ -379,17 +434,12 @@ browser.storage.onChanged.addListener(async (changes, namespace) => {
     .catch(console.debug);
 });
 
-browser.contextMenus.onClicked.addListener(async (info: browser.Menus.OnClickData, tab?: browser.Tabs.Tab) => {
-  if (info.menuItemId !== CONTEXT_MENU_ITEM_ID) return;
-
+const runContextMenuAction = async (
+  info: browser.Menus.OnClickData,
+  tab?: browser.Tabs.Tab
+) => {
   const frameId = typeof info.frameId === 'number' ? info.frameId : 0;
-  const feedbackFrameId = 0;
-  await sendContextMessage(tab, feedbackFrameId, {
-    status: 'loading',
-    message: loadingCopy(),
-    fill: false,
-    copyToClipboard: false,
-  });
+  await sendContextFeedback(tab, frameId, 'loading', loadingCopy());
 
   const serializedUrl = info.frameUrl || info.pageUrl || tab?.url;
   let hostname = '';
@@ -400,12 +450,7 @@ browser.contextMenus.onClicked.addListener(async (info: browser.Menus.OnClickDat
   const client = await resolveTrustedICloudClient();
 
   if (!client) {
-    await sendContextMessage(tab, feedbackFrameId, {
-      status: 'error',
-      message: signedOutCtaCopy(),
-      fill: false,
-      copyToClipboard: false,
-    });
+    await sendContextFeedback(tab, frameId, 'error', signedOutCtaCopy());
     performDeauthSideEffects();
     return;
   }
@@ -422,30 +467,37 @@ browser.contextMenus.onClicked.addListener(async (info: browser.Menus.OnClickDat
     });
 
     if (result?.filled) {
-      await sendContextMessage(tab, feedbackFrameId, {
-        status: 'success',
-        message: result.copied
+      await sendContextFeedback(
+        tab,
+        frameId,
+        'success',
+        result.copied
           ? tr('Private address created, filled, and copied.', '隐藏邮件地址已创建、填入并复制。')
-          : tr('Private address created and filled.', '隐藏邮件地址已创建并填入。'),
-        fill: false,
-      });
+          : tr('Private address created and filled.', '隐藏邮件地址已创建并填入。')
+      );
     } else {
-      await sendContextMessage(tab, feedbackFrameId, {
-        status: 'success',
-        message: result?.copied
+      await sendContextFeedback(
+        tab,
+        frameId,
+        'success',
+        result?.copied
           ? tr('Private address created and copied. The original field was no longer available.', '隐藏邮件地址已创建并复制，但原输入框已不可用。')
-          : tr('Private address was created, but the original field was no longer available.', '隐藏邮件地址已创建，但原输入框已不可用。'),
-        fill: false,
-      });
+          : tr('Private address was created, but the original field was no longer available.', '隐藏邮件地址已创建，但原输入框已不可用。')
+      );
     }
   } catch (e) {
-    await sendContextMessage(tab, feedbackFrameId, {
-      status: 'error',
-      message: String(e),
-      fill: false,
-      copyToClipboard: false,
-    });
+    await sendContextFeedback(tab, frameId, 'error', contextMenuErrorCopy(e));
   }
+};
+
+// contextMenus.onClicked is a void-returning Chrome event. Keep the listener synchronous and
+// attach an explicit terminal catch so an unexpected failure can never become a silent no-op.
+browser.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== CONTEXT_MENU_ITEM_ID) return;
+  const frameId = typeof info.frameId === 'number' ? info.frameId : 0;
+  runContextMenuAction(info, tab).catch((error) => {
+    sendContextFeedback(tab, frameId, 'error', contextMenuErrorCopy(error)).catch(console.debug);
+  });
 });
 
 browser.webRequest.onResponseStarted.addListener(

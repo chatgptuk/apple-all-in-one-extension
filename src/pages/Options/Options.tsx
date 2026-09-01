@@ -316,7 +316,7 @@ const Options = () => (
       </SettingsSection>
 
       <SettingsSection title={tr('Upstream Projects', '主要上游项目')} footer={tr('Independent open-source project. Not endorsed by or affiliated with Apple. Open Passwords components retain Apache-2.0 notices; Hide My Email components retain the original MIT notice.', '独立开源项目，与 Apple 无隶属或官方合作关系。Open Passwords 组件保留 Apache-2.0 声明；Hide My Email 组件保留原 MIT 声明。')}>
-        <SettingsRow icon={<Symbol name="key" size={18} />} tone="purple" title="Open Passwords" description={tr('Apple Passwords, verification codes and secure field chooser.', 'Apple 密码、验证码与安全输入框选择器。')} href="https://github.com/ManiForoughi2/open-passwords" />
+        <SettingsRow icon={<Symbol name="key" size={18} />} tone="purple" title="Open Passwords" description={tr('Native Apple Passwords connection, password autofill and secure field chooser.', 'Apple 密码原生连接、密码自动填充与安全输入框选择器。')} href="https://github.com/ManiForoughi2/open-passwords" />
         <SettingsRow icon={<Symbol name="mail" size={18} />} tone="blue" title="Hide My Email" description={tr('Private alias creation, management and recent iCloud Mail activity.', '隐藏邮件地址的创建、管理与近期 iCloud Mail 活动。')} href="https://github.com/dedoussis/icloud-hide-my-email-browser-extension" />
         <SettingsRow icon={<Symbol name="external" size={18} />} tone="gray" title={tr('Open iCloud.com', '打开 iCloud.com')} href="https://icloud.com" />
       </SettingsSection>

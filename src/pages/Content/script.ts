@@ -45,6 +45,14 @@ const isEditableTarget = (value: unknown): value is EditableTarget => {
   return value instanceof HTMLElement && value.isContentEditable;
 };
 
+const isVisibleEditableTarget = (value: unknown): value is EditableTarget => {
+  if (!isEditableTarget(value) || !value.isConnected) return false;
+  const rect = value.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  const style = getComputedStyle(value);
+  return style.display !== 'none' && style.visibility !== 'hidden';
+};
+
 const setEditableValue = (target: EditableTarget, value: string) => {
   if (target instanceof HTMLInputElement) {
     setNativeInputValue(target, value);
@@ -67,26 +75,41 @@ const activeEmailInput = () => {
 const firstEmailInput = () =>
   document.querySelector<HTMLInputElement>(EMAIL_INPUT_QUERY) || undefined;
 
+const hoveredEditableTarget = () => {
+  try {
+    const hovered = Array.from(document.querySelectorAll(':hover'));
+    return hovered.reverse().find(isVisibleEditableTarget);
+  } catch {
+    return undefined;
+  }
+};
+
+const onlyVisibleEmailInput = () => {
+  const candidates = Array.from(document.querySelectorAll<HTMLInputElement>(EMAIL_INPUT_QUERY)).filter(
+    isVisibleEditableTarget
+  );
+  return candidates.length === 1 ? candidates[0] : undefined;
+};
+
 const recentContextTarget = () => {
   if (
     lastContextTarget &&
-    lastContextTarget.isConnected &&
+    isVisibleEditableTarget(lastContextTarget) &&
     Date.now() - lastContextTargetAt <= CONTEXT_TARGET_TTL_MS
   ) {
     return lastContextTarget;
   }
   const active = document.activeElement;
-  return isEditableTarget(active) ? active : undefined;
+  if (isVisibleEditableTarget(active)) return active;
+  return hoveredEditableTarget() || onlyVisibleEmailInput();
 };
 
-const rememberContextTarget = (event: MouseEvent) => {
+const rememberContextTarget = (event: Event) => {
   const target = event.composedPath().find(isEditableTarget);
   if (!target) return;
   lastContextTarget = target;
   lastContextTargetAt = Date.now();
 };
-
-document.addEventListener('contextmenu', rememberContextTarget, true);
 
 const copyText = async (text: string): Promise<boolean> => {
   try {
@@ -116,6 +139,14 @@ const ensureToast = () => {
 
   const host = document.createElement('div');
   host.setAttribute('data-apple-all-in-one-toast', '');
+  host.style.setProperty('display', 'block', 'important');
+  host.style.setProperty('position', 'fixed', 'important');
+  host.style.setProperty('inset', '0', 'important');
+  host.style.setProperty('width', '0', 'important');
+  host.style.setProperty('height', '0', 'important');
+  host.style.setProperty('overflow', 'visible', 'important');
+  host.style.setProperty('pointer-events', 'none', 'important');
+  host.style.setProperty('z-index', '2147483647', 'important');
   const shadow = host.attachShadow({ mode: 'closed' });
   const style = document.createElement('style');
   style.textContent = `
@@ -195,6 +226,24 @@ const showToast = (status: NonNullable<ActiveInputElementWriteData['status']>, m
 };
 
 export default async function main(): Promise<void> {
+  document.addEventListener('contextmenu', rememberContextTarget, true);
+  document.addEventListener(
+    'pointerdown',
+    (event) => {
+      if (event.button === 2) rememberContextTarget(event);
+    },
+    true
+  );
+
+  // A context-menu click can inject this script into a tab that predates an extension reload.
+  // In that case the original contextmenu event has already happened, but Chromium commonly
+  // keeps the right-clicked element hovered while the native menu is open.
+  const initialContextTarget = hoveredEditableTarget();
+  if (initialContextTarget) {
+    lastContextTarget = initialContextTarget;
+    lastContextTargetAt = Date.now();
+  }
+
   browser.runtime.onMessage.addListener((uncastedMessage: unknown) => {
     const message = uncastedMessage as Message<unknown>;
 
@@ -225,7 +274,12 @@ export default async function main(): Promise<void> {
             ? await copyText(data.text)
             : false;
 
-          return { ok: true, filled, copied };
+          return {
+            ok: !data.fill || filled,
+            filled,
+            copied,
+            ...(!data.fill || filled ? {} : { error: 'context_target_unavailable' as const }),
+          };
         })();
       }
       default:

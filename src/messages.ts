@@ -38,6 +38,7 @@ export type ActiveInputElementWriteResponse = {
   ok: boolean;
   filled?: boolean;
   copied?: boolean;
+  error?: 'context_target_unavailable';
 };
 
 export type ReservationResponseData = GenerationResponseData;
