@@ -1,6 +1,7 @@
 // owns the native connection + SRP session; alarm keep-alive holds the MV3 worker so the PIN isnt re-prompted every idle-out
 
 import { ApplePasswords, State } from "./protocol.js";
+import { orderLoginsForHost } from "./login-order.js";
 
 const client = new ApplePasswords();
 
@@ -23,15 +24,8 @@ function recordMru(host, username) {
   arr.unshift(u);
   mruByHost.set(host, arr.slice(0, 10));
 }
-function orderByMru(host, logins) {
-  const order = mruByHost.get(host);
-  if (!order || !order.length) return logins;
-  const rank = (u) => {
-    const i = order.indexOf((u || "").toLowerCase());
-    return i === -1 ? Infinity : i;
-  };
-  // stable sort keeps the helper's own order for anything not in the MRU list
-  return [...logins].sort((a, b) => rank(a.username) - rank(b.username));
+function orderForHost(host, logins) {
+  return orderLoginsForHost(host, logins, mruByHost.get(host) || []);
 }
 
 // which account a submitted password attaches to ("" lets the native sheet ask, null saves nothing); in the background so a redirect cant lose it
@@ -42,7 +36,7 @@ function pickSaveTarget({ host, existing, detected, generated, newPwCtx }) {
   if (detected) return detected;
   // no username on a reset with saved account(s): attach to the MRU one, apple's sheet lets the user re-pick
   if (newPwCtx && existing.length) {
-    return orderByMru(host, existing.map((u) => ({ username: u })))[0].username;
+    return orderForHost(host, existing.map((u) => ({ username: u })))[0].username;
   }
   if (generated) return "";
   return null;
@@ -249,7 +243,7 @@ export async function getCredentialForURLInternal(tabId, url) {
 
   let logins = [];
   try {
-    logins = uniqueByUsername(orderByMru(host, await client.getLoginNamesForURL(tabId, url)));
+    logins = uniqueByUsername(orderForHost(host, await client.getLoginNamesForURL(tabId, url)));
   } catch (e) {
     return { ok: false, reason: "lookup_failed", error: String(e?.message ?? e) };
   }
@@ -311,7 +305,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse({
               ok: true,
               locked: false,
-              logins: uniqueByUsername(orderByMru(registrableHost(frameUrl), logins)),
+              logins: uniqueByUsername(orderForHost(registrableHost(frameUrl), logins)),
             });
           } catch (e) {
             sendResponse({
@@ -517,8 +511,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 source: item.source || "",
               })),
             });
-          } catch {
-            sendResponse({ ok: true, locked: false, items: [] });
+          } catch (e) {
+            sendResponse({
+              ok: false,
+              locked: false,
+              error: `Verification-code lookup failed: ${String(e?.message ?? e)}`,
+            });
           }
           break;
         }
@@ -614,7 +612,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!client.ready) return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
           try {
             const logins = await client.getLoginNamesForURL(tab.id, tab.url);
-            sendResponse({ ok: true, logins: uniqueByUsername(orderByMru(registrableHost(tab.url), logins)) });
+            sendResponse({ ok: true, logins: uniqueByUsername(orderForHost(registrableHost(tab.url), logins)) });
           } catch (e) {
             sendResponse({ ok: false, error: `Apple Passwords lookup failed: ${String(e?.message ?? e)}` });
           }

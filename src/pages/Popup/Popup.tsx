@@ -447,13 +447,32 @@ const AppSegmentedControl = ({ value, onChange }: { value: AppSection; onChange:
   </nav>
 );
 
-const sendPasswordMessage = async <T,>(message: Record<string, unknown>): Promise<T | undefined> => {
+const sendPasswordMessage = async <T,>(message: Record<string, unknown>, timeoutMs?: number): Promise<T | undefined> => {
   const delays = [0, 100, 250, 500, 900];
   let lastError: unknown;
   for (const delay of delays) {
     if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));
     try {
-      return (await browser.runtime.sendMessage(message)) as T;
+      const request = browser.runtime.sendMessage(message);
+      const response = timeoutMs == null
+        ? await request
+        : await new Promise<unknown>((resolve, reject) => {
+            const timer = window.setTimeout(
+              () => reject(new Error(`Timed out waiting for ${String(message.type || 'password request')}`)),
+              timeoutMs,
+            );
+            request.then(
+              (value) => {
+                window.clearTimeout(timer);
+                resolve(value);
+              },
+              (error) => {
+                window.clearTimeout(timer);
+                reject(error);
+              },
+            );
+          });
+      return response as T;
     } catch (error) {
       lastError = error;
       const text = String(error);
@@ -471,6 +490,7 @@ const PasswordsView = () => {
   const [logins, setLogins] = useState<PasswordLogin[]>([]);
   const [otps, setOtps] = useState<OtpItem[]>([]);
   const [siteItemsLoading, setSiteItemsLoading] = useState(false);
+  const [otpItemsLoading, setOtpItemsLoading] = useState(false);
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
@@ -494,19 +514,22 @@ const PasswordsView = () => {
       setHost(tr('This Website', '此网站'));
     }
     setSiteItemsLoading(true);
+    setOtpItemsLoading(false);
     setError(undefined);
 
+    let loginSucceeded = false;
     try {
-      const [loginResult, otpResult] = await Promise.all([
-        sendPasswordMessage<{ ok?: boolean; logins?: PasswordLogin[]; error?: string }>({ type: 'getLogins' }),
-        sendPasswordMessage<{ ok?: boolean; items?: OtpItem[]; error?: string }>({ type: 'getOtpItems' }),
-      ]);
+      const loginResult = await sendPasswordMessage<{ ok?: boolean; logins?: PasswordLogin[]; error?: string }>(
+        { type: 'getLogins' },
+        10_000,
+      );
       if (sequence !== siteLoadSequence.current) return;
 
       const currentTab = await getActiveTabForPopup();
       if (currentTab?.id !== tab?.id || currentTab?.url !== tab?.url) return;
 
       if (loginResult?.ok) {
+        loginSucceeded = true;
         setLogins(loginResult.logins || []);
       } else {
         setError(loginResult?.error || tr(
@@ -514,17 +537,32 @@ const PasswordsView = () => {
           '无法查询 Apple 密码；扩展不会再把查询失败显示成“没有已保存项目”。'
         ));
       }
+    } finally {
+      if (sequence === siteLoadSequence.current) setSiteItemsLoading(false);
+    }
+
+    if (sequence !== siteLoadSequence.current) return;
+    setOtpItemsLoading(true);
+    try {
+      const otpResult = await sendPasswordMessage<{ ok?: boolean; items?: OtpItem[]; error?: string }>(
+        { type: 'getOtpItems' },
+        10_000,
+      );
+      if (sequence !== siteLoadSequence.current) return;
+
+      const currentTab = await getActiveTabForPopup();
+      if (currentTab?.id !== tab?.id || currentTab?.url !== tab?.url) return;
 
       if (otpResult?.ok) {
         setOtps(otpResult.items || []);
-      } else if (loginResult?.ok) {
+      } else if (loginSucceeded) {
         setError(otpResult?.error || tr(
           'Could not query verification codes.',
           '无法查询验证码。'
         ));
       }
     } finally {
-      if (sequence === siteLoadSequence.current) setSiteItemsLoading(false);
+      if (sequence === siteLoadSequence.current) setOtpItemsLoading(false);
     }
   };
 
@@ -734,8 +772,8 @@ const PasswordsView = () => {
       <div className="password-site-heading"><span>{tr('This Website', '此网站')}</span><strong>{host}</strong><button type="button" className="hme-circle-action" onClick={async () => { await sendPasswordMessage({ type: 'clearCache' }); await loadSiteItems(); }}><Symbol name="refresh" size={16} /></button></div>
       {logins.length > 0 && <><div className="hme-section-label">{tr('Saved Passwords', '已保存的密码')}</div><section className="hme-group unified-password-list">{logins.map((login, index) => <button type="button" key={`${login.username}-${index}`} onClick={() => fillLogin(login)} disabled={!!busy}><span className="hme-symbol-tile is-purple"><Symbol name="key" size={17} /></span><span className="unified-row-copy"><strong>{login.username || tr('(no username)', '(无用户名)')}</strong><small>{tr('Fill from Apple Passwords', '从 Apple 密码填充')}</small></span>{busy === `login:${login.username || ''}` ? <Spinner compact /> : <Symbol name="chevron-right" size={15} />}</button>)}</section></>}
       {otps.length > 0 && <><div className="hme-section-label">{tr('Verification Codes', '验证码')}</div><section className="hme-group unified-password-list">{otps.map((item, index) => <button type="button" key={`${item.username}-${index}`} onClick={() => fillOtp(item)} disabled={!!busy}><span className="hme-symbol-tile is-blue"><Symbol name="code" size={17} /></span><span className="unified-row-copy"><strong>{item.username || tr('Verification Code', '验证码')}</strong><small>{item.domain ? `${tr('For', '用于')} ${item.domain}` : tr('Fill current code', '填充当前验证码')}</small></span>{busy === `otp:${item.username || ''}` ? <Spinner compact /> : <Symbol name="chevron-right" size={15} />}</button>)}</section></>}
-      {siteItemsLoading && !logins.length && !otps.length && <div className="hme-loading-state"><Spinner /> <span>{tr('Checking Apple Passwords…', '正在查询 Apple 密码…')}</span></div>}
-      {!siteItemsLoading && !error && !logins.length && !otps.length && <section className="hme-group unified-empty-group"><span className="hme-symbol-tile is-purple"><Symbol name="key" size={18} /></span><div><strong>{tr('No saved items for this website', '此网站没有已保存项目')}</strong><span>{tr('Click a sign-in field to use the secure inline chooser.', '点击登录输入框即可使用安全的内联选择器。')}</span></div></section>}
+      {(siteItemsLoading || otpItemsLoading) && !error && !logins.length && !otps.length && <div className="hme-loading-state"><Spinner /> <span>{tr('Checking Apple Passwords…', '正在查询 Apple 密码…')}</span></div>}
+      {!siteItemsLoading && !otpItemsLoading && !error && !logins.length && !otps.length && <section className="hme-group unified-empty-group"><span className="hme-symbol-tile is-purple"><Symbol name="key" size={18} /></span><div><strong>{tr('No saved items for this website', '此网站没有已保存项目')}</strong><span>{tr('Click a sign-in field to use the secure inline chooser.', '点击登录输入框即可使用安全的内联选择器。')}</span></div></section>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
       <button className="hme-plain-link unified-lock" type="button" onClick={async () => {
         await sendPasswordMessage({ type: 'disconnect' });

@@ -20,6 +20,8 @@ const NATIVE_HOST = "com.apple.passwordmanager";
 const BROWSER_NAME = "Chrome";
 const VERSION = "1.0";
 const EMPTY_LOOKUP_RETRY_MS = 120;
+const LOOKUP_QUEUE_TIMEOUT_MS = 2500;
+const INTERACTIVE_SECRET_TIMEOUT_MS = 60_000;
 // how long we still trust a code the Mac put on screen. past this we re-prompt rather than
 // verify against a challenge the user has probably lost track of
 const CHALLENGE_TTL_MS = 3 * 60_000;
@@ -89,14 +91,32 @@ export class ApplePasswords {
     this._lock = Promise.resolve();
   }
 
-  _withLock(fn) {
-    const run = this._lock.then(fn, fn);
+  _withLock(fn, { queueTimeoutMs = null } = {}) {
+    let expired = false;
+    let timer = null;
+    const queueTimeout =
+      queueTimeoutMs == null
+        ? null
+        : new Promise((_, reject) => {
+            timer = setTimeout(() => {
+              expired = true;
+              reject(new Error("Apple Passwords is busy; retry the lookup"));
+            }, queueTimeoutMs);
+          });
+    const invoke = () => {
+      if (timer) clearTimeout(timer);
+      // A metadata lookup that already timed out in the queue is stale. Skip it
+      // when the preceding Touch ID/password read eventually releases the lock.
+      if (expired) return undefined;
+      return fn();
+    };
+    const run = this._lock.then(invoke, invoke);
     // keep chain alive even if fn rejects, so the next caller still runs
     this._lock = run.then(
       () => {},
       () => {},
     );
-    return run;
+    return queueTimeout ? Promise.race([run, queueTimeout]) : run;
   }
 
   onStateChange(fn) {
@@ -365,6 +385,7 @@ export class ApplePasswords {
             return entries.map((e) => ({
               username: entryUsername(e),
               sites: e.sites ?? e.SITES,
+              highLevelDomain: e.highLevelDomain ?? e.HIGH_LEVEL_DOMAIN,
             }));
           }
         } else if (res.STATUS !== QueryStatus.NoResults) {
@@ -375,7 +396,7 @@ export class ApplePasswords {
         await new Promise((resolve) => setTimeout(resolve, EMPTY_LOOKUP_RETRY_MS));
       }
       return [];
-    });
+    }, { queueTimeoutMs: LOOKUP_QUEUE_TIMEOUT_MS });
   }
 
   async getPasswordForLoginName(tabId, url, loginName) {
@@ -389,7 +410,7 @@ export class ApplePasswords {
         // which a page could use to request another origin's password
         hostname,
         { ACT: Action.SEARCH, URL: hostname, USR: loginName.username },
-        null, // no timeout, helper may require Touch ID here
+        INTERACTIVE_SECRET_TIMEOUT_MS, // allow Touch ID, but never block later lookups forever
       );
       if (res.STATUS === QueryStatus.Success) {
         const e = queryEntries(res)[0];
@@ -424,7 +445,7 @@ export class ApplePasswords {
           TYPE: "oneTimeCodes",
           frameURLs: [frameUrl],
         },
-        revealCode ? null : 5000,
+        revealCode ? INTERACTIVE_SECRET_TIMEOUT_MS : 5000,
         { qid: "CmdDidFillOneTimeCode", includeUrl: false },
       );
       if (res.STATUS === QueryStatus.Success) {
@@ -437,7 +458,7 @@ export class ApplePasswords {
       }
       if (res.STATUS === QueryStatus.NoResults) return [];
       throw queryStatusError(res.STATUS);
-    });
+    }, revealCode ? {} : { queueTimeoutMs: LOOKUP_QUEUE_TIMEOUT_MS });
   }
 
   async listOneTimeCodesForURL(tabId, url) {
