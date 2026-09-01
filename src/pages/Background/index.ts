@@ -8,6 +8,7 @@ import {
   Options,
 } from '../../storage';
 import ICloudClient, {
+  type HmeEmail,
   PremiumMailSettings,
   DEFAULT_SETUP_URL,
   CN_SETUP_URL,
@@ -223,12 +224,69 @@ const resolveTrustedICloudClient = async (): Promise<ICloudClient | undefined> =
   return client;
 };
 
+const INLINE_ALIAS_CACHE_TTL = 60 * 1000;
+let inlineAliasCache:
+  | { sessionKey: string; expiresAt: number; emails: HmeEmail[] }
+  | undefined;
+
+const candidateHostname = (value: string | undefined): string | undefined => {
+  const raw = value?.trim();
+  if (!raw || raw.includes('@')) return undefined;
+  try {
+    return new URL(raw.includes('://') ? raw : `https://${raw}`).hostname
+      .replace(/^www\./i, '')
+      .toLocaleLowerCase();
+  } catch {
+    return undefined;
+  }
+};
+
+const aliasesForClient = async (clientState: NonNullable<Store['clientState']>) => {
+  const sessionKey = `${clientState.setupUrl}:${clientState.dsid || ''}`;
+  if (
+    inlineAliasCache?.sessionKey === sessionKey &&
+    inlineAliasCache.expiresAt > Date.now()
+  ) {
+    return inlineAliasCache.emails;
+  }
+
+  const client = new ICloudClient(
+    clientState.setupUrl,
+    clientState.webservices,
+    clientState.dsid
+  );
+  const result = await new PremiumMailSettings(client).listHme();
+  inlineAliasCache = {
+    sessionKey,
+    expiresAt: Date.now() + INLINE_ALIAS_CACHE_TTL,
+    emails: result.hmeEmails,
+  };
+  return result.hmeEmails;
+};
+
+const findExistingAliasForHost = (emails: HmeEmail[], host: string): HmeEmail | undefined => {
+  const normalizedHost = host.replace(/^www\./i, '').toLocaleLowerCase();
+  return [...emails]
+    .filter((email) => email.isActive)
+    .sort((left, right) => right.createTimestamp - left.createTimestamp)
+    .find((email) =>
+      [email.domain, email.label, email.note].some((value) => {
+        const candidate = candidateHostname(value);
+        return !!candidate && (
+          candidate === normalizedHost ||
+          normalizedHost.endsWith(`.${candidate}`) ||
+          candidate.endsWith(`.${normalizedHost}`)
+        );
+      })
+    );
+};
+
 // Shared secure Passwords chooser asks for Hide My Email only after a real user click.
 // These listeners return synchronously for messages they do not own. This matters because
 // an async onMessage listener that resolves undefined can still race another listener's
 // response channel in Chromium.
 browser.runtime.onMessage.addListener((uncastedMessage: unknown, sender: browser.Runtime.MessageSender) => {
-  const message = uncastedMessage as { type?: string; hme?: string };
+  const message = uncastedMessage as { type?: string; hme?: string; wantAlias?: boolean };
   if (typeof message?.type !== 'string' || !message.type.startsWith('hme:')) return undefined;
 
   return (async () => {
@@ -237,9 +295,29 @@ browser.runtime.onMessage.addListener((uncastedMessage: unknown, sender: browser
         getBrowserStorageValue('clientState'),
         getBrowserStorageValue('iCloudHmeOptions'),
       ]);
+      let existingHme: Pick<HmeEmail, 'hme' | 'label' | 'domain'> | undefined;
+      if (clientState && message.wantAlias && sender.url) {
+        try {
+          const senderHost = new URL(sender.url).hostname;
+          const existing = findExistingAliasForHost(
+            await aliasesForClient(clientState),
+            senderHost
+          );
+          if (existing) {
+            existingHme = {
+              hme: existing.hme,
+              label: existing.label,
+              domain: existing.domain,
+            };
+          }
+        } catch (error) {
+          console.debug('Could not match a Hide My Email address to this website', error);
+        }
+      }
       return {
         ok: true,
         ready: !!clientState && options?.autofill.button !== false,
+        existingHme,
       };
     }
 
@@ -268,6 +346,27 @@ browser.runtime.onMessage.addListener((uncastedMessage: unknown, sender: browser
           if (sender.url) label = new URL(sender.url).hostname || label;
         } catch {}
         const result = await new PremiumMailSettings(client).reserveHme(message.hme, label);
+        inlineAliasCache = undefined;
+        return { ok: true, hme: result.hme };
+      } catch (error) {
+        return { ok: false, error: String(error) };
+      }
+    }
+
+    if (message.type === 'hme:create-for-site') {
+      try {
+        if (!(await client.isAuthenticated())) {
+          performDeauthSideEffects();
+          return { ok: false, error: tr('Your iCloud session expired. Sign in to iCloud.com again.', '你的 iCloud 会话已过期，请重新登录 iCloud.com。') };
+        }
+        let label = tr('Private Signup', '私密注册');
+        try {
+          if (sender.url) label = new URL(sender.url).hostname || label;
+        } catch {}
+        const settings = new PremiumMailSettings(client);
+        const generated = await settings.generateHme();
+        const result = await settings.reserveHme(generated, label, 'Private signup through Apple All-In-One');
+        inlineAliasCache = undefined;
         return { ok: true, hme: result.hme };
       } catch (error) {
         return { ok: false, error: String(error) };

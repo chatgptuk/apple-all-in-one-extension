@@ -10,7 +10,11 @@ import ICloudClient, {
   CN_SETUP_URL,
   UnsuccessfulRequestError,
 } from '../../iCloudClient';
-import { ICloudMailClient, isICloudMailForwardingAddress } from '../../iCloudMailClient';
+import {
+  ICloudMailClient,
+  isICloudMailForwardingAddress,
+  type RecentAliasMessage,
+} from '../../iCloudMailClient';
 import { useBrowserStorageState } from '../../hooks';
 import { MessageType, sendMessageToTab } from '../../messages';
 import {
@@ -1388,8 +1392,18 @@ const DetailsView = ({
   const [busy, setBusy] = useState<'activation' | 'delete'>();
   const [error, setError] = useState<string>();
   const [copied, setCopied] = useState(false);
+  const [recentMail, setRecentMail] = useState<RecentAliasMessage[]>();
+  const [mailStatus, setMailStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [mailError, setMailError] = useState<string>();
+  const [copiedCodeId, setCopiedCodeId] = useState<string>();
 
-  useEffect(() => setItem(hme), [hme]);
+  useEffect(() => {
+    setItem(hme);
+    setRecentMail(undefined);
+    setMailStatus('idle');
+    setMailError(undefined);
+    setCopiedCodeId(undefined);
+  }, [hme]);
 
   const copy = async () => {
     await navigator.clipboard.writeText(item.hme);
@@ -1439,6 +1453,57 @@ const DetailsView = ({
     }
   };
 
+  const loadRecentMail = async () => {
+    setMailError(undefined);
+    if (!isICloudMailForwardingAddress(item.forwardToEmail)) {
+      setMailStatus('error');
+      setMailError(
+        tr(
+          'Recent mail is available when this address forwards to iCloud Mail.',
+          '只有当此地址转发到 iCloud Mail 时，才能读取近期邮件。'
+        )
+      );
+      return;
+    }
+    if (!client.dsid || !client.hasWebservice('mccgateway')) {
+      setMailStatus('error');
+      setMailError(
+        tr(
+          'Refresh the iCloud web session before reading recent mail.',
+          '请先刷新 iCloud 网页会话，再读取近期邮件。'
+        )
+      );
+      return;
+    }
+
+    setMailStatus('loading');
+    try {
+      const messages = await new ICloudMailClient(client).listRecentMessagesForAlias(
+        item.hme,
+        MAIL_ACTIVITY_SCAN_THREADS,
+        6
+      );
+      setRecentMail(messages);
+      setMailStatus('ready');
+    } catch (e) {
+      console.debug('Unable to read recent mail for Hide My Email alias', e);
+      setMailStatus('error');
+      setMailError(
+        tr(
+          'Recent mail could not be read. Your address and cached activity were not changed.',
+          '无法读取近期邮件，地址与已缓存的收信活动均未被修改。'
+        )
+      );
+    }
+  };
+
+  const copyVerificationCode = async (message: RecentAliasMessage) => {
+    if (!message.verificationCode) return;
+    await navigator.clipboard.writeText(message.verificationCode);
+    setCopiedCodeId(message.id);
+    window.setTimeout(() => setCopiedCodeId(undefined), 1500);
+  };
+
   return (
     <div className="hme-view-body">
       <button type="button" className="hme-back-button" onClick={onBack}><Symbol name="back" size={16} />{tr('My Addresses', '我的地址')}</button>
@@ -1477,6 +1542,71 @@ const DetailsView = ({
         <DetailRow label={tr('Status', '状态')}><span className={cx('hme-status-text', item.isActive && 'is-active')}><i />{item.isActive ? tr('Active', '已启用') : tr('Inactive', '已停用')}</span></DetailRow>
         {item.note && <DetailRow label={tr('Note', '备注')}><span>{item.note}</span></DetailRow>}
       </section>
+
+      <div className="hme-section-label hme-mail-section-heading">
+        <span>{tr('Recent Mail', '近期邮件')}</span>
+        {mailStatus !== 'idle' && (
+          <button
+            type="button"
+            disabled={mailStatus === 'loading'}
+            onClick={() => void loadRecentMail()}
+            aria-label={tr('Refresh recent mail', '刷新近期邮件')}
+            title={tr('Refresh recent mail', '刷新近期邮件')}
+          >
+            {mailStatus === 'loading' ? <Spinner compact /> : <Symbol name="refresh" size={13} />}
+          </button>
+        )}
+      </div>
+
+      {mailStatus === 'idle' && (
+        <section className="hme-group hme-mail-consent">
+          <span className="hme-symbol-tile is-blue"><Symbol name="mail" size={18} /></span>
+          <div>
+            <strong>{tr('Check this address’s recent mail', '检查此地址的近期邮件')}</strong>
+            <span>{tr('Runs only when you ask. Message previews are not saved by the extension.', '只在你主动操作时读取，扩展不会保存邮件预览。')}</span>
+          </div>
+          <button type="button" onClick={() => void loadRecentMail()}>{tr('Check', '检查')}</button>
+        </section>
+      )}
+
+      {mailStatus === 'loading' && (
+        <div className="hme-mail-loading" role="status"><Spinner /><span>{tr('Checking recent iCloud Mail…', '正在检查近期 iCloud 邮件…')}</span></div>
+      )}
+
+      {mailError && <ErrorBanner>{mailError}</ErrorBanner>}
+
+      {mailStatus === 'ready' && recentMail?.length === 0 && (
+        <section className="hme-group hme-mail-empty">
+          <Symbol name="mail" size={19} />
+          <span>{tr('No recent messages were found for this private address.', '没有找到发给此隐藏地址的近期邮件。')}</span>
+        </section>
+      )}
+
+      {mailStatus === 'ready' && !!recentMail?.length && (
+        <section className="hme-group hme-recent-mail-list">
+          {recentMail.map((message) => (
+            <article className="hme-mail-row" key={`${message.threadId}:${message.id}`}>
+              <div className="hme-mail-row-heading">
+                <strong>{message.sender || tr('Unknown Sender', '未知发件人')}</strong>
+                <time dateTime={new Date(message.timestamp).toISOString()}>{formatActivityTime(message.timestamp)}</time>
+              </div>
+              <div className="hme-mail-subject">{message.subject || tr('Message', '邮件')}</div>
+              {message.preview && <p>{message.preview}</p>}
+              {message.verificationCode && (
+                <button type="button" className="hme-code-button" onClick={() => void copyVerificationCode(message)}>
+                  <Symbol name={copiedCodeId === message.id ? 'check' : 'copy'} size={14} />
+                  <span>{message.verificationCode}</span>
+                  <small>{copiedCodeId === message.id ? tr('Copied', '已复制') : tr('Copy Code', '复制验证码')}</small>
+                </button>
+              )}
+            </article>
+          ))}
+          <a className="hme-mail-open-link" href="https://www.icloud.com/mail/" target="_blank" rel="noreferrer">
+            <span>{tr('Open iCloud Mail', '打开 iCloud 邮件')}</span>
+            <Symbol name="external" size={14} />
+          </a>
+        </section>
+      )}
 
       {error && <ErrorBanner>{error}</ErrorBanner>}
 

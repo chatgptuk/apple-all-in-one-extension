@@ -61,7 +61,7 @@ const Userguide = () => (
           {tr('Switch to the Hide My Email tab in the extension. It reuses the authenticated iCloud browser session and never asks for your Apple Account password.', '切换到扩展中的“隐藏邮件地址”页面。它会复用已认证的 iCloud 浏览器会话，不会要求输入 Apple 账户密码。')}
         </SetupStep>
         <SetupStep number={3} title={tr('Create only when you ask', '仅在你主动操作时创建')}>
-          {tr('On web forms, the unified chooser only shows a Create action. No alias is generated until you explicitly click it, and it is reserved only after you click Use.', '在网页表单中，统一选择器只显示“创建”操作。只有你明确点击后才会生成地址，并且只有点击“使用”后才会正式保留该地址。')}
+          {tr('The normal Hide My Email action generates a candidate only after you click Create and reserves it after Use. Smart Signup is also explicit: choosing Private Signup reuses a matching alias or creates and reserves one while preparing a strong password.', '普通隐藏邮件地址操作只有在点击“创建”后才生成候选地址，并在点击“使用”后正式保留。智能注册同样需要明确操作：选择“私密注册”后，扩展会复用匹配地址，或创建并预留新地址，同时准备强密码。')}
         </SetupStep>
       </div>
     </section>
@@ -72,8 +72,10 @@ const Userguide = () => (
         <FeatureRow icon="key" tone="purple" title={tr('Passwords', '密码')}>{tr('Fill and save credentials through the macOS Apple Passwords helper.', '通过 macOS Apple 密码辅助程序填写和保存登录凭据。')}</FeatureRow>
         <FeatureRow icon="code" tone="purple" title={tr('Verification Codes', '验证码')}>{tr('Discover saved Apple Passwords verification codes and fill one only after you choose it.', '发现 Apple 密码中保存的验证码，并且只在你明确选择后填入。')}</FeatureRow>
         <FeatureRow icon="mail" tone="blue" title={tr('Hide My Email', '隐藏邮件地址')}>{tr('Create aliases from the same secure login-field chooser without a second extension popup.', '直接从同一个安全登录框选择器创建隐藏地址，不需要第二个扩展弹窗。')}</FeatureRow>
+        <FeatureRow icon="autofill" tone="blue" title={tr('Smart Signup', '智能注册')}>{tr('Detect Sign in with Apple, reuse a site alias, or explicitly create a private address and strong password together.', '识别“使用 Apple 登录”、复用网站地址，或明确地同时创建隐藏地址与强密码。')}</FeatureRow>
         <FeatureRow icon="aliases" tone="cyan" title={tr('Alias Manager', '地址管理')}>{tr('Search, copy, deactivate, reactivate, directly delete, or bulk-manage addresses.', '搜索、复制、停用、重新启用、直接删除或批量管理地址。')}</FeatureRow>
         <FeatureRow icon="clock" tone="green" title={tr('Recent Mail Activity', '近期收信活动')}>{tr('When forwarding to iCloud Mail, show cached last-received activity from a bounded recent Inbox scan.', '转发到 iCloud Mail 时，通过有限范围的近期收件箱扫描显示缓存的最后收信时间。')}</FeatureRow>
+        <FeatureRow icon="code" tone="green" title={tr('Recent Mail & Codes', '近期邮件与验证码')}>{tr('Open an address, request a bounded recent-mail scan, and copy a locally detected verification code without storing message previews.', '打开地址后主动执行有限范围的近期邮件扫描，并复制本地识别的验证码，同时不保存邮件预览。')}</FeatureRow>
       </div>
     </section>
 

@@ -6,7 +6,7 @@
 
 > **v1.2.6:** Toolbar startup is isolated behind a small bootstrap that repairs global/per-tab action state, while opening the popup can automatically begin the Apple Passwords access-code flow.
 
-# Apple All-In-One v1.2.13
+# Apple All-In-One v1.2.14
 
 **Apple All-In-One** is an independent Chromium extension that brings several Apple account features into one place: Apple Passwords, passkeys, verification codes, and iCloud+ Hide My Email.
 
@@ -41,7 +41,9 @@ See `LICENSES/`, `THIRD_PARTY_NOTICES.md`, and `OPEN_PASSWORDS_NOTICE` for licen
 - Multi-select bulk deactivate and bulk delete with sequential execution.
 - Website/domain identification and favicon display for aliases.
 - Recent iCloud Mail activity (`Last received …`) with a 24-hour automatic cache and bounded Inbox scan. Manual refresh still forces an immediate scan.
+- User-triggered recent-mail previews for each Hide My Email address, including local verification-code detection and one-click copy. Message previews are kept in popup memory only and are not written to extension storage.
 - One secure inline chooser for saved credentials, verification codes, and optional Hide My Email creation.
+- Smart Signup in the isolated inline chooser: detect Sign in with Apple, reuse an active alias already associated with the website, or explicitly create a private address and prepare a strong password in one action.
 - Apple-style popup, settings, guide, and code-drawn cloud/keyhole application icon.
 - English and Simplified Chinese UI. Default language follows the browser; Settings can override it with Chinese or English.
 - Lazy startup: installation and browser startup do not validate iCloud or connect to the Apple Passwords native helper. Those services initialize only when their feature is actually used.
@@ -82,6 +84,13 @@ The flow is intentionally explicit:
 4. Choose **Use** to reserve it and fill the field.
 
 This prevents unused aliases from being created simply because a page contains an email input.
+
+On a registration form, **Smart Signup** adds two explicit alternatives when available:
+
+- **Continue with Apple** activates the website's detected Sign in with Apple control.
+- **Private Signup** reuses an active alias already associated with the website, or creates and reserves a new alias, then prepares a strong password. If the password field is already visible it is filled immediately; otherwise the same generated password is offered on the next password step.
+
+No alias is created and no website control is activated until the user chooses one of these actions in the extension-origin chooser.
 
 ## Install / upgrade from Open Passwords
 
@@ -138,6 +147,8 @@ Apple All-In-One does not attempt to read an Apple Account password from Keychai
 
 Mail activity scans recent `INBOX` threads only. Spam/Junk/Trash are not scanned. Cached historical last-received timestamps remain available even when a previously matched email is later moved or deleted.
 
+Opening an address does not read message previews. The **Check** button performs a bounded, user-triggered Inbox scan and keeps the resulting sender, subject, short preview, and locally detected verification code in popup memory only. Closing the popup discards that list; only the existing historical `Last received` timestamp cache is persisted.
+
 Recent mail activity is available only when Hide My Email forwards to iCloud Mail (`@icloud.com`, `@me.com`, or `@mac.com`).
 
 ## Hide My Email management
@@ -154,6 +165,7 @@ The address manager supports:
 - Partial-failure handling: failed addresses remain selected for retry.
 - Website favicons when Chrome can resolve them, with safe fallbacks.
 - Cached recent mail activity.
+- On-demand recent messages with local verification-code copy and a direct iCloud Mail link.
 
 ## Browser notes
 
@@ -195,3 +207,9 @@ The Apple Passwords access-code field in the toolbar popup automatically verifie
 - Filters Chromium's generic globe response so unresolved websites still keep deterministic monograms.
 - Avoids third-party CSS/font preload warnings being attributed to `popup.html`.
 - Serializes context-menu setup and consumes `runtime.lastError`, preventing duplicate-ID errors during extension reload/install races.
+
+### v1.2.14 private signup and relay inbox
+
+- Adds an on-demand recent-mail list to each Hide My Email address without persisting message previews.
+- Detects 4–8 digit verification codes in recent mail subjects/previews and offers one-click copy.
+- Adds Smart Signup to the isolated inline chooser with Sign in with Apple detection, existing-alias reuse, explicit alias creation, and a prepared strong password that survives multi-step registration forms for up to ten minutes in content-script memory.

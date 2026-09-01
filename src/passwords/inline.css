@@ -96,6 +96,22 @@ button.row:hover, button.row:focus-visible { background: var(--hover); outline: 
 }
 .privacy-row:disabled { opacity: .72; cursor: progress; }
 
+.apple-signin-icon {
+  color: light-dark(#111, #fff);
+  background: light-dark(rgba(0,0,0,.07), rgba(255,255,255,.12));
+  font: 22px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.apple-signin-action {
+  color: light-dark(#fff, #111);
+  background: light-dark(#111, #fff);
+}
+.smart-signup-icon {
+  color: #fff;
+  background: linear-gradient(145deg, #55b8ff, #0a84ff 62%, #0068da);
+}
+.smart-signup-icon svg { fill: currentColor; }
+.smart-signup-row:disabled { opacity: .72; cursor: progress; }
+
 /* Apple All-In-One v1.1 — unified secure chooser styling */
 :root { --purple: #0a84ff; }
 .card {

@@ -64,25 +64,104 @@ function makeHideEmailRow(state) {
   main.className = 'row-main';
   const title = document.createElement('div');
   title.className = 'row-title';
-  title.textContent = state.hmeGenerated ? state.hmeGenerated : L('Hide My Email', '隐藏邮件地址');
+  const existing = state.existingHme?.hme || '';
+  title.textContent = state.hmeGenerated || existing || L('Hide My Email', '隐藏邮件地址');
   const sub = document.createElement('div');
   sub.className = 'row-sub';
   sub.textContent = state.hmeGenerated
     ? L('Use this private address', '使用此隐藏地址')
-    : `${L('Create a private address for', '为以下网站创建隐藏地址：')} ${safeHost(state.host)}`;
+    : existing
+      ? `${L('Reuse for', '为此网站复用：')} ${safeHost(state.host)}`
+      : `${L('Create a private address for', '为以下网站创建隐藏地址：')} ${safeHost(state.host)}`;
   main.append(title, sub);
   const action = document.createElement('span');
   action.className = 'row-action';
-  action.textContent = state.hmeGenerated ? L('Use', '使用') : L('Create', '创建');
+  action.textContent = state.hmeGenerated || existing ? L('Use', '使用') : L('Create', '创建');
   button.append(icon, main, action);
   button.addEventListener('click', (e) => {
     if (!e.isTrusted) return;
     clearStatus();
     button.disabled = true;
-    action.textContent = state.hmeGenerated ? L('Using…', '正在使用…') : L('Creating…', '正在创建…');
-    send(state.hmeGenerated ? 'hme-use' : 'hme-generate', state.hmeGenerated ? { hme: state.hmeGenerated } : {}, e, button);
+    action.textContent = state.hmeGenerated || existing ? L('Using…', '正在使用…') : L('Creating…', '正在创建…');
+    if (state.hmeGenerated) send('hme-use', { hme: state.hmeGenerated }, e, button);
+    else if (existing) send('hme-fill-existing', { hme: existing }, e, button);
+    else send('hme-generate', {}, e, button);
   });
   return button;
+}
+
+function makeAppleSignInRow() {
+  const button = document.createElement('button');
+  button.className = 'row apple-signin-row';
+  button.type = 'button';
+  const icon = document.createElement('span');
+  icon.className = 'row-icon apple-signin-icon';
+  icon.textContent = '';
+  const main = document.createElement('span');
+  main.className = 'row-main';
+  const title = document.createElement('div');
+  title.className = 'row-title';
+  title.textContent = L('Continue with Apple', '使用 Apple 继续');
+  const sub = document.createElement('div');
+  sub.className = 'row-sub';
+  sub.textContent = L('Apple sign-in is available on this page', '此页面支持使用 Apple 登录');
+  main.append(title, sub);
+  const action = document.createElement('span');
+  action.className = 'row-action apple-signin-action';
+  action.textContent = L('Continue', '继续');
+  button.append(icon, main, action);
+  button.addEventListener('click', (e) => {
+    if (!e.isTrusted) return;
+    clearStatus();
+    send('use-apple-sign-in', {}, e, button);
+  });
+  return button;
+}
+
+function makeSmartSignupRow(state) {
+  const button = document.createElement('button');
+  button.className = 'row smart-signup-row';
+  button.type = 'button';
+  const icon = document.createElement('span');
+  icon.className = 'row-icon smart-signup-icon';
+  icon.innerHTML = svgMail();
+  const main = document.createElement('span');
+  main.className = 'row-main';
+  const title = document.createElement('div');
+  title.className = 'row-title';
+  title.textContent = state.existingHme?.hme || L('Private Signup', '私密注册');
+  const sub = document.createElement('div');
+  sub.className = 'row-sub';
+  sub.textContent = state.existingHme?.hme
+    ? L('Reuse this address and prepare a strong password', '复用此地址并准备强密码')
+    : L('Create a private address and prepare a strong password', '创建隐藏地址并准备强密码');
+  main.append(title, sub);
+  const action = document.createElement('span');
+  action.className = 'row-action';
+  action.textContent = L('Use', '使用');
+  button.append(icon, main, action);
+  button.addEventListener('click', (e) => {
+    if (!e.isTrusted) return;
+    clearStatus();
+    button.disabled = true;
+    action.textContent = L('Preparing…', '正在准备…');
+    send('smart-signup', {
+      hme: state.existingHme?.hme || '',
+      password: generateApplePassword(),
+    }, e, button);
+  });
+  return button;
+}
+
+function appendSmartSignup(state) {
+  if (!state.hasAppleSignIn && !state.canSmartSignup) return false;
+  const label = document.createElement('div');
+  label.className = 'section-label';
+  label.textContent = L('Smart Signup', '智能注册');
+  content.appendChild(label);
+  if (state.hasAppleSignIn) content.appendChild(makeAppleSignInRow());
+  if (state.canSmartSignup) content.appendChild(makeSmartSignupRow(state));
+  return true;
 }
 
 function svgChevron() {
@@ -269,14 +348,19 @@ function renderLocked(state) {
     wrap.appendChild(button);
   }
   content.appendChild(wrap);
-  if (state.canHideEmail) {
+  const hasSection = true;
+  if (state.hasAppleSignIn || state.canSmartSignup) {
     const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div);
+    appendSmartSignup(state);
+  }
+  if (state.canHideEmail) {
+    if (hasSection) { const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div); }
     const label = document.createElement('div'); label.className = 'section-label'; label.textContent = L('Privacy', '隐私'); content.appendChild(label);
     content.appendChild(makeHideEmailRow(state));
   }
   if (state.canGenerate) {
     const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div);
-    appendGenerators();
+    appendGenerators(state.pendingPassword || '');
   }
 }
 
@@ -323,11 +407,15 @@ function renderPin() {
   setTimeout(() => input.focus(), 0);
 }
 
-function appendGenerators() {
+function appendGenerators(pendingPassword = '') {
   const label = document.createElement('div');
   label.className = 'section-label';
-  label.textContent = L('Suggested Password', '建议密码');
+  label.textContent = pendingPassword ? L('Prepared Signup Password', '已准备的注册密码') : L('Suggested Password', '建议密码');
   content.appendChild(label);
+  if (pendingPassword) {
+    content.appendChild(makeGeneratorRow(L('Use Prepared Password', '使用已准备密码'), pendingPassword));
+    return;
+  }
   content.appendChild(makeGeneratorRow(L('Strong Password', '强密码'), generateApplePassword()));
   content.appendChild(makeGeneratorRow(L('Without Symbols', '不含符号'), generateAlphanumeric()));
 }
@@ -359,26 +447,31 @@ function renderState(state) {
     reportHeight();
     return;
   }
+  let hasSection = appendSmartSignup(state);
   if (state.logins?.length) {
+    if (hasSection) { const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div); }
     const label = document.createElement('div');
     label.className = 'section-label';
     label.textContent = state.logins.length === 1 ? L('Saved Login', '已保存的登录') : L('Saved Logins', '已保存的登录');
     content.appendChild(label);
     for (const login of state.logins) content.appendChild(makeLoginRow(login));
+    hasSection = true;
   }
   if (state.canHideEmail) {
-    if (state.logins?.length) { const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div); }
+    if (hasSection) { const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div); }
     const label = document.createElement('div');
     label.className = 'section-label';
     label.textContent = L('Privacy', '隐私');
     content.appendChild(label);
     content.appendChild(makeHideEmailRow(state));
+    hasSection = true;
   }
   if (state.canGenerate) {
-    if (state.logins?.length || state.canHideEmail) { const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div); }
-    appendGenerators();
+    if (hasSection) { const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div); }
+    appendGenerators(state.pendingPassword || '');
+    hasSection = true;
   }
-  if (!state.logins?.length && !state.canGenerate && !state.canHideEmail) {
+  if (!hasSection) {
     const empty = document.createElement('div');
     empty.className = 'empty';
     empty.textContent = L('No saved passwords for this website.', '此网站没有已保存的密码。');

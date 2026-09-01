@@ -1,4 +1,5 @@
 import ICloudClient from './iCloudClient';
+import { extractMailVerificationCode } from './mailVerificationCode';
 
 const MAIL_CLIENT_BUILD_NUMBER = '2624Build13';
 const DEFAULT_SCAN_THREADS = 80;
@@ -7,6 +8,12 @@ const MAX_METADATA_CONCURRENCY = 6;
 type ThreadDigest = {
   threadId?: string;
   timestamp?: number;
+  subject?: unknown;
+  snippet?: unknown;
+  preview?: unknown;
+  messageSnippet?: unknown;
+  sender?: unknown;
+  from?: unknown;
 };
 
 type ThreadSearchResponse = {
@@ -19,9 +26,16 @@ type MessageMetadata = {
   date?: number;
   sentDate?: string;
   folder?: string;
-  to?: string[];
-  cc?: string[];
-  bcc?: string[];
+  to?: unknown;
+  cc?: unknown;
+  bcc?: unknown;
+  from?: unknown;
+  sender?: unknown;
+  subject?: unknown;
+  snippet?: unknown;
+  preview?: unknown;
+  messageSnippet?: unknown;
+  bodyPreview?: unknown;
 };
 
 type ThreadMetadataResponse = {
@@ -32,6 +46,16 @@ export type MailActivityScanResult = {
   lastReceivedByAlias: Record<string, number>;
   scannedThreads: number;
   scannedAt: number;
+};
+
+export type RecentAliasMessage = {
+  id: string;
+  threadId: string;
+  timestamp: number;
+  sender: string;
+  subject: string;
+  preview?: string;
+  verificationCode?: string;
 };
 
 const normalizeTimestamp = (value: number | undefined): number | undefined => {
@@ -47,12 +71,79 @@ const parseDateString = (value: string | undefined): number | undefined => {
 
 const normalizeAddress = (value: string) => value.trim().toLocaleLowerCase();
 
-const stringsContainAlias = (values: Array<string[] | undefined>, alias: string) => {
+const collectKnownText = (value: unknown): string[] => {
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : [];
+  if (Array.isArray(value)) return value.flatMap(collectKnownText);
+  if (!value || typeof value !== 'object') return [];
+
+  const record = value as Record<string, unknown>;
+  return [
+    record.email,
+    record.emailAddress,
+    record.address,
+    record.name,
+    record.displayName,
+    record.value,
+  ].flatMap(collectKnownText);
+};
+
+const firstKnownText = (...values: unknown[]): string | undefined =>
+  values.flatMap(collectKnownText).find((value) => value.length > 0);
+
+const stringsContainAlias = (values: unknown[], alias: string) => {
   const normalized = normalizeAddress(alias);
   return values
-    .flatMap((value) => value || [])
+    .flatMap(collectKnownText)
     .some((value) => value.toLocaleLowerCase().includes(normalized));
 };
+
+const cleanPreview = (
+  value: string | undefined,
+  maxLength = 180
+): string | undefined => {
+  const cleaned = value?.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return undefined;
+  return cleaned.length > maxLength
+    ? `${cleaned.slice(0, maxLength - 1).trimEnd()}…`
+    : cleaned;
+};
+
+const senderLabel = (
+  message: MessageMetadata,
+  thread: ThreadDigest
+): string => {
+  const raw = firstKnownText(
+    message.from,
+    message.sender,
+    thread.from,
+    thread.sender
+  );
+  if (!raw) return '';
+  const bracketed = raw.match(/^\s*([^<]+?)\s*<[^>]+>\s*$/);
+  return cleanPreview(bracketed?.[1] || raw, 90) || '';
+};
+
+const messageSubject = (
+  message: MessageMetadata,
+  thread: ThreadDigest
+): string =>
+  cleanPreview(firstKnownText(message.subject, thread.subject), 140) || '';
+
+const messagePreview = (
+  message: MessageMetadata,
+  thread: ThreadDigest
+): string | undefined =>
+  cleanPreview(
+    firstKnownText(
+      message.snippet,
+      message.preview,
+      message.messageSnippet,
+      message.bodyPreview,
+      thread.snippet,
+      thread.preview,
+      thread.messageSnippet
+    )
+  );
 
 const mapWithConcurrency = async <T, R>(
   items: T[],
@@ -117,7 +208,7 @@ export class ICloudMailClient {
         condstore: 1,
         qresync: 1,
         threadmode: 1,
-      },
+      }
     });
     return response.threadList || [];
   }
@@ -131,7 +222,7 @@ export class ICloudMailClient {
         condstore: 1,
         qresync: 1,
         threadmode: 1,
-      },
+      }
     });
     return response.messageMetadataList || [];
   }
@@ -176,6 +267,77 @@ export class ICloudMailClient {
       scannedThreads: threads.length,
       scannedAt: Date.now(),
     };
+  }
+
+  async listRecentMessagesForAlias(
+    alias: string,
+    maxThreads = DEFAULT_SCAN_THREADS,
+    limit = 6
+  ): Promise<RecentAliasMessage[]> {
+    const normalizedAlias = normalizeAddress(alias);
+    if (!normalizedAlias || limit <= 0) return [];
+
+    const threads = await this.listRecentThreads(maxThreads);
+    const candidates = await mapWithConcurrency(
+      threads,
+      MAX_METADATA_CONCURRENCY,
+      async (thread): Promise<RecentAliasMessage | undefined> => {
+        if (!thread.threadId) return undefined;
+
+        let metadata: MessageMetadata[];
+        try {
+          metadata = await this.getThreadMetadata(thread.threadId);
+        } catch (error) {
+          console.debug(
+            'Unable to inspect iCloud Mail thread metadata',
+            thread.threadId,
+            error
+          );
+          return undefined;
+        }
+
+        const matches = metadata
+          .filter((message) => !message.folder || message.folder === 'INBOX')
+          .filter((message) =>
+            stringsContainAlias(
+              [message.to, message.cc, message.bcc],
+              normalizedAlias
+            )
+          )
+          .map((message) => ({
+            message,
+            timestamp:
+              normalizeTimestamp(message.date) ||
+              parseDateString(message.sentDate) ||
+              normalizeTimestamp(thread.timestamp) ||
+              0,
+          }))
+          .filter((candidate) => candidate.timestamp > 0)
+          .sort((left, right) => right.timestamp - left.timestamp);
+
+        const latest = matches[0];
+        if (!latest) return undefined;
+
+        const subject = messageSubject(latest.message, thread);
+        const preview = messagePreview(latest.message, thread);
+        return {
+          id: latest.message.uid || thread.threadId,
+          threadId: thread.threadId,
+          timestamp: latest.timestamp,
+          sender: senderLabel(latest.message, thread),
+          subject,
+          preview,
+          verificationCode: extractMailVerificationCode(
+            `${subject}\n${preview || ''}`
+          ),
+        };
+      }
+    );
+
+    return candidates
+      .filter((message): message is RecentAliasMessage => message !== undefined)
+      .sort((left, right) => right.timestamp - left.timestamp)
+      .slice(0, Math.max(1, Math.min(limit, 20)));
   }
 }
 

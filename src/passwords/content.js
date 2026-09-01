@@ -30,6 +30,9 @@ const NONLOGIN_HINT = /\b(search|find|filter|query|lookup|tag|tags|mention|comme
 const LOGINISH = /log[\s_-]?in|sign[\s_-]?in|auth|session|sso|oauth|account|idp|passport/i;
 const SUBMITY_LABEL = /\b(sign[\s-]?in|sign[\s-]?up|log[\s-]?in|register|create[\s-]?account|save|update|reset|confirm|done|set|apply|activate|enroll|finish|proceed|verify|join|change[\s-]?password|continue|next|submit)\b/i;
 const SUBMITY_ATTR = /pwd|passw|reset|submit|login|signin|confirm|continue|next|done|save|set|apply/i;
+const SIGNUP_LABEL = /\b(sign[\s-]?up|register|create[\s-]?(?:an?\s+)?account|join|get[\s-]?started)\b|注册|创建账号|建立帐户|建立帳戶|加入/i;
+const APPLE_SIGN_IN_LABEL = /\b(?:sign[\s-]?(?:in|up)|log[\s-]?in|continue)\s+with\s+apple\b|使用\s*Apple\s*(?:登录|登入|繼續|继续)|通过\s*Apple\s*(?:登录|登入)|用\s*Apple\s*(?:登录|登入)/i;
+const APPLE_SIGN_IN_ATTR = /sign.?in.?with.?apple|apple.?sign.?in|apple.?login|appleid.?auth/i;
 const IFRAME_LOGIN_ALLOWLIST = [
   'accounts.google.com', 'adyen.com', 'affirm.com', 'afterpay.com', 'amazon.com', 'amazoncognito.com',
   'appleid.apple.com', 'atlassian.com', 'auth0.com', 'authkit.app', 'awsapps.com', 'b2clogin.com',
@@ -240,6 +243,49 @@ function isNewPasswordField(el) {
   return Array.from(document.querySelectorAll('button, input[type=submit], input[type=button]')).some((b) =>
     /\b(sign[\s-]?up|register|create[\s-]?account|create[\s-]?your[\s-]?account)\b/i.test(b.textContent || b.value || ''),
   );
+}
+
+function appleSignInControl() {
+  const controls = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"]'));
+  return controls.find((control) => {
+    if (!isVisible(control)) return false;
+    const copy = [
+      control.textContent,
+      control.value,
+      control.getAttribute('aria-label'),
+      control.getAttribute('title'),
+    ].filter(Boolean).join(' ');
+    if (APPLE_SIGN_IN_LABEL.test(copy)) return true;
+    const attrs = `${control.id || ''} ${control.className || ''} ${control.getAttribute('name') || ''} ${control.getAttribute('data-provider') || ''}`;
+    return APPLE_SIGN_IN_ATTR.test(attrs);
+  }) || null;
+}
+
+function isSignupContext(el) {
+  if (isNewPasswordField(el)) return true;
+  if (!isHideEmailField(el)) return false;
+  const scope = el.form || document;
+  if (SIGNUP_LABEL.test(scope.getAttribute?.('action') || '')) return true;
+  return Array.from(scope.querySelectorAll('button, a, [role="button"], input[type="submit"], input[type="button"]')).some((control) =>
+    SIGNUP_LABEL.test(`${control.textContent || ''} ${control.value || ''} ${control.getAttribute('aria-label') || ''}`),
+  );
+}
+
+function preparedPasswordForThisSite() {
+  if (!lastGenerated || lastGenerated.host !== location.hostname || Date.now() - lastGenerated.at >= 600000) return '';
+  return lastGenerated.password || '';
+}
+
+function signupPasswordTarget(anchor) {
+  const roots = [];
+  if (anchor?.form) roots.push(anchor.form);
+  roots.push(document);
+  for (const root of roots) {
+    const fields = Array.from(root.querySelectorAll('input[type="password"]')).filter(isVisible);
+    const preferred = fields.find(isNewPasswordField) || fields[0];
+    if (preferred) return preferred;
+  }
+  return null;
 }
 
 function isAllowlistedLoginHost(host) {
@@ -568,9 +614,10 @@ async function reloadUiState() {
       canUnlock: window === window.top,
     };
   } else {
+    const wantsAlias = isHideEmailField(uiAnchor);
     const [res, hme] = await Promise.all([
       chrome.runtime.sendMessage({ type: 'inlineLogins' }).catch(() => null),
-      chrome.runtime.sendMessage({ type: 'hme:inline-state' }).catch(() => null),
+      chrome.runtime.sendMessage({ type: 'hme:inline-state', wantAlias: wantsAlias }).catch(() => null),
     ]);
     uiState = {
       type: 'state',
@@ -580,7 +627,11 @@ async function reloadUiState() {
       locked: !!(res?.ok && res.locked),
       logins: res?.ok && !res.locked ? (res.logins || []).map((l) => ({ username: l.username || '' })) : [],
       canGenerate: isNewPasswordField(uiAnchor),
-      canHideEmail: isHideEmailField(uiAnchor) && !!hme?.ready,
+      canHideEmail: wantsAlias && !!hme?.ready,
+      canSmartSignup: wantsAlias && isSignupContext(uiAnchor) && !!hme?.ready,
+      hasAppleSignIn: !!appleSignInControl(),
+      existingHme: hme?.existingHme || null,
+      pendingPassword: preparedPasswordForThisSite(),
       hmeGenerated: '',
       canUnlock: window === window.top,
     };
@@ -630,6 +681,49 @@ async function handleUiAction(msg) {
         ? L('No compatible username or password field was found in this sign-in step.', '当前登录步骤中没有找到可填充的账号或密码输入框。')
         : (res?.error || L('Could not fill this login.', '无法填充此登录信息。')),
     });
+    return;
+  }
+
+  if (msg.type === 'use-apple-sign-in') {
+    const control = appleSignInControl();
+    if (!control) {
+      postUi({ type: 'error', message: L('The Sign in with Apple button is no longer available.', '“使用 Apple 登录”按钮已不可用。') });
+      return;
+    }
+    closeUi();
+    try { control.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch {}
+    try { control.focus({ preventScroll: true }); } catch {}
+    setTimeout(() => control.click(), 0);
+    return;
+  }
+
+  if (msg.type === 'hme-fill-existing') {
+    if (!isHideEmailField(uiAnchor) || typeof msg.hme !== 'string' || !msg.hme.includes('@')) return;
+    setValue(uiAnchor, msg.hme);
+    uiAnchor.focus();
+    closeUi();
+    return;
+  }
+
+  if (msg.type === 'smart-signup') {
+    if (!isHideEmailField(uiAnchor) || typeof msg.password !== 'string' || msg.password.length < 8) return;
+    let alias = typeof msg.hme === 'string' && msg.hme.includes('@') ? msg.hme : '';
+    if (!alias) {
+      const result = await chrome.runtime.sendMessage({ type: 'hme:create-for-site' }).catch((e) => ({ ok: false, error: String(e) }));
+      if (!result?.ok || !result.hme) {
+        postUi({ type: 'error', message: result?.error || L('Could not create a private signup address.', '无法创建私密注册地址。') });
+        return;
+      }
+      alias = String(result.hme);
+    }
+
+    const anchor = uiAnchor;
+    setValue(anchor, alias);
+    const passwordField = signupPasswordTarget(anchor);
+    if (passwordField) fillGeneratedPassword(passwordField, msg.password);
+    else lastGenerated = { host: location.hostname, password: msg.password, at: Date.now(), pending: true };
+    anchor.focus();
+    closeUi();
     return;
   }
 
@@ -750,13 +844,14 @@ window.addEventListener('message', (event) => {
 async function openForField(field) {
   if (!(field instanceof HTMLInputElement) || !frameIsSafe()) return;
   const otp = isOtpField(field);
-  if (!otp && !isLoginField(field)) return;
+  const signupField = isHideEmailField(field) && isSignupContext(field);
+  if (!otp && !isLoginField(field) && !signupField) return;
   const seq = ++offerSeq;
   const [res, hme] = otp
     ? [await chrome.runtime.sendMessage({ type: 'inlineOtpItems' }).catch(() => null), null]
     : await Promise.all([
         chrome.runtime.sendMessage({ type: 'inlineLogins' }).catch(() => null),
-        chrome.runtime.sendMessage({ type: 'hme:inline-state' }).catch(() => null),
+        chrome.runtime.sendMessage({ type: 'hme:inline-state', wantAlias: isHideEmailField(field) }).catch(() => null),
       ]);
   if (seq !== offerSeq || field !== deepActiveElement()) return;
   const state = otp ? {
@@ -779,11 +874,15 @@ async function openForField(field) {
     logins: res?.ok && !res.locked ? (res.logins || []).map((l) => ({ username: l.username || '' })) : [],
     canGenerate: isNewPasswordField(field),
     canHideEmail: isHideEmailField(field) && !!hme?.ready,
+    canSmartSignup: isHideEmailField(field) && isSignupContext(field) && !!hme?.ready,
+    hasAppleSignIn: !!appleSignInControl(),
+    existingHme: hme?.existingHme || null,
+    pendingPassword: preparedPasswordForThisSite(),
     hmeGenerated: '',
     canUnlock: window === window.top,
   };
   const hasItems = otp ? state.otpItems.length > 0 : state.logins.length > 0;
-  if (!state.locked && !hasItems && !state.canGenerate && !state.canHideEmail) return;
+  if (!state.locked && !hasItems && !state.canGenerate && !state.canHideEmail && !state.hasAppleSignIn) return;
   buildSecureUi(field, state);
 }
 
@@ -800,7 +899,8 @@ document.addEventListener('focusin', (e) => {
   if (!(field instanceof HTMLInputElement)) return;
 
   const otp = isOtpField(field);
-  if (!otp && !isLoginField(field)) return;
+  const signupField = isHideEmailField(field) && isSignupContext(field);
+  if (!otp && !isLoginField(field) && !signupField) return;
   // Password-account enumeration still needs an explicit recent user gesture. OTP metadata is
   // different: cmd 16 is a secret-free lookup (the actual TOTP is only fetched by cmd 17
   // after a trusted click inside our extension-origin chooser). Allowing script/autofocus on
