@@ -1,0 +1,424 @@
+const secret = location.hash.slice(1);
+let languagePreference = 'auto';
+function resolveLanguage(pref = languagePreference) {
+  if (pref === 'zh-CN') return 'zh-CN';
+  if (pref === 'en') return 'en';
+  let ui = 'en';
+  try { ui = chrome.i18n?.getUILanguage?.() || navigator.language || 'en'; } catch (_) { ui = navigator.language || 'en'; }
+  return /^zh(?:-|$)/i.test(ui) ? 'zh-CN' : 'en';
+}
+function L(en, zh) { const lang = currentState?.language || resolveLanguage(); return lang === 'zh-CN' ? zh : en; }
+try {
+  chrome.storage?.local?.get({ languagePreference: 'auto' }, (d) => {
+    languagePreference = d.languagePreference || 'auto';
+    document.documentElement.lang = resolveLanguage();
+    applyStaticLocale();
+    if (currentState) renderState(currentState);
+  });
+  chrome.storage?.onChanged?.addListener((changes, area) => {
+    if (area === 'local' && changes.languagePreference) {
+      languagePreference = changes.languagePreference.newValue || 'auto';
+      document.documentElement.lang = resolveLanguage();
+      applyStaticLocale();
+      if (currentState) renderState(currentState);
+    }
+  });
+} catch (_) {}
+const content = document.getElementById('content');
+const hostLabel = document.getElementById('host');
+const status = document.getElementById('status');
+const closeBtn = document.getElementById('close');
+let port = null;
+let currentState = null;
+let pinMode = false;
+
+function applyStaticLocale() {
+  document.documentElement.lang = resolveLanguage();
+  const eyebrow = document.querySelector('.eyebrow');
+  if (eyebrow) eyebrow.textContent = L('PASSWORDS & PRIVACY', '密码与隐私');
+  if (!currentState && hostLabel) hostLabel.textContent = L('This Website', '此网站');
+  closeBtn?.setAttribute('aria-label', L('Close', '关闭'));
+}
+applyStaticLocale();
+
+function safeHost(host) {
+  return String(host || L('Passwords', '密码')).slice(0, 160);
+}
+
+function svgKey() {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.6 4.1a5 5 0 1 0-3.7 8.3l1.2 1.2v2h2v2h2v2.3h3.2v-3l-6.2-6.2a5 5 0 0 0 1.5-6.6ZM7.5 9.2a1.7 1.7 0 1 1 0-3.4 1.7 1.7 0 0 1 0 3.4Z"/></svg>';
+}
+
+function svgMail() {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5h13A3.5 3.5 0 0 1 22 8.5v7A3.5 3.5 0 0 1 18.5 19h-13A3.5 3.5 0 0 1 2 15.5v-7A3.5 3.5 0 0 1 5.5 5Zm-.8 3.1 6.1 4.7a2 2 0 0 0 2.4 0l6.1-4.7a1.2 1.2 0 0 0-.8-.3h-13c-.3 0-.6.1-.8.3Z"/></svg>';
+}
+
+function makeHideEmailRow(state) {
+  const button = document.createElement('button');
+  button.className = 'row privacy-row';
+  button.type = 'button';
+  const icon = document.createElement('span');
+  icon.className = 'row-icon privacy-icon';
+  icon.innerHTML = svgMail();
+  const main = document.createElement('span');
+  main.className = 'row-main';
+  const title = document.createElement('div');
+  title.className = 'row-title';
+  title.textContent = state.hmeGenerated ? state.hmeGenerated : L('Hide My Email', '隐藏邮件地址');
+  const sub = document.createElement('div');
+  sub.className = 'row-sub';
+  sub.textContent = state.hmeGenerated
+    ? L('Use this private address', '使用此隐藏地址')
+    : `${L('Create a private address for', '为以下网站创建隐藏地址：')} ${safeHost(state.host)}`;
+  main.append(title, sub);
+  const action = document.createElement('span');
+  action.className = 'row-action';
+  action.textContent = state.hmeGenerated ? L('Use', '使用') : L('Create', '创建');
+  button.append(icon, main, action);
+  button.addEventListener('click', (e) => {
+    if (!e.isTrusted) return;
+    clearStatus();
+    button.disabled = true;
+    action.textContent = state.hmeGenerated ? L('Using…', '正在使用…') : L('Creating…', '正在创建…');
+    send(state.hmeGenerated ? 'hme-use' : 'hme-generate', state.hmeGenerated ? { hme: state.hmeGenerated } : {}, e, button);
+  });
+  return button;
+}
+
+function svgChevron() {
+  return '<svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>';
+}
+
+function clearStatus() {
+  status.hidden = true;
+  status.textContent = '';
+}
+
+function showStatus(message) {
+  status.textContent = String(message || L('Something went wrong.', '出现了问题。'));
+  status.hidden = false;
+  reportHeight();
+}
+
+function pointForEvent(e, el) {
+  if (!e?.isTrusted) return { gesture: false, x: 0, y: 0 };
+  let x = Number(e.clientX) || 0;
+  let y = Number(e.clientY) || 0;
+  if (x <= 0 && y <= 0 && el) {
+    const r = el.getBoundingClientRect();
+    x = r.left + r.width / 2;
+    y = r.top + r.height / 2;
+  }
+  return { gesture: true, x, y };
+}
+
+function send(type, body = {}, e = null, el = null) {
+  if (!port) return;
+  port.postMessage({ type, ...body, ...pointForEvent(e, el) });
+}
+
+function reportHeight() {
+  requestAnimationFrame(() => {
+    const h = Math.ceil(document.documentElement.scrollHeight + 4);
+    port?.postMessage({ type: 'resize', height: h });
+  });
+}
+
+function randomBelow(n) {
+  const max = 0x100000000;
+  const limit = max - (max % n);
+  const a = new Uint32Array(1);
+  do crypto.getRandomValues(a); while (a[0] >= limit);
+  return a[0] % n;
+}
+function pick(set) { return set[randomBelow(set.length)]; }
+
+function generateApplePassword() {
+  const C = 'bcdfghjkmnpqrstvwxz';
+  const V = 'aeiouy';
+  const groups = [];
+  for (let g = 0; g < 3; g++) groups.push([pick(C), pick(V), pick(C), pick(C), pick(V), pick(C)]);
+  const slots = [[0,5],[1,0],[1,5],[2,0],[2,5]];
+  const [dg, dp] = slots[randomBelow(slots.length)];
+  groups[dg][dp] = String(randomBelow(10));
+  let ug, up;
+  do { ug = randomBelow(3); up = randomBelow(6); } while (ug === dg && up === dp);
+  groups[ug][up] = groups[ug][up].toUpperCase();
+  return groups.map((g) => g.join('')).join('-');
+}
+
+function generateAlphanumeric(len = 15) {
+  const lower = 'abcdefghijklmnopqrstuvwxyz';
+  const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const digit = '0123456789';
+  const all = lower + upper + digit;
+  const chars = [pick(lower), pick(upper), pick(digit)];
+  while (chars.length < len) chars.push(pick(all));
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomBelow(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
+}
+
+function makeLoginRow(login) {
+  const button = document.createElement('button');
+  button.className = 'row';
+  button.type = 'button';
+  const icon = document.createElement('span');
+  icon.className = 'row-icon';
+  icon.innerHTML = svgKey();
+  const main = document.createElement('span');
+  main.className = 'row-main';
+  const title = document.createElement('div');
+  title.className = 'row-title';
+  title.textContent = login.username || L('(no username)', '(无用户名)');
+  const sub = document.createElement('div');
+  sub.className = 'row-sub';
+  sub.textContent = L('Fill from Apple Passwords', '从 Apple 密码填充');
+  main.append(title, sub);
+  button.append(icon, main);
+  button.insertAdjacentHTML('beforeend', svgChevron());
+  button.addEventListener('click', (e) => {
+    if (!e.isTrusted) return;
+    clearStatus();
+    send('fill-login', { username: login.username || '' }, e, button);
+  });
+  return button;
+}
+
+function svgCode() {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h10A3.5 3.5 0 0 1 20.5 7v10a3.5 3.5 0 0 1-3.5 3.5H7A3.5 3.5 0 0 1 3.5 17V7A3.5 3.5 0 0 1 7 3.5Zm1.2 6.2a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Zm3.8 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Zm3.8 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Z"/></svg>';
+}
+
+function makeOtpRow(item) {
+  const button = document.createElement('button');
+  button.className = 'row';
+  button.type = 'button';
+  const icon = document.createElement('span');
+  icon.className = 'row-icon';
+  icon.innerHTML = svgCode();
+  const main = document.createElement('span');
+  main.className = 'row-main';
+  const title = document.createElement('div');
+  title.className = 'row-title';
+  title.textContent = item.username || L('Verification Code', '验证码');
+  const sub = document.createElement('div');
+  sub.className = 'row-sub';
+  sub.textContent = item.domain ? `${L('Fill verification code for', '填充验证码：')} ${item.domain}` : L('Fill verification code from Apple Passwords', '从 Apple 密码填充验证码');
+  main.append(title, sub);
+  button.append(icon, main);
+  button.insertAdjacentHTML('beforeend', svgChevron());
+  button.addEventListener('click', (e) => {
+    if (!e.isTrusted) return;
+    clearStatus();
+    send('fill-otp', { username: item.username || '' }, e, button);
+  });
+  return button;
+}
+
+function makeGeneratorRow(label, password) {
+  const button = document.createElement('button');
+  button.className = 'row';
+  button.type = 'button';
+  const icon = document.createElement('span');
+  icon.className = 'row-icon';
+  icon.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8 14.2 8l5.5.5-4.2 3.6 1.3 5.4-4.8-2.8-4.8 2.8 1.3-5.4-4.2-3.6L9.8 8 12 2.8Z"/></svg>';
+  const main = document.createElement('span');
+  main.className = 'row-main';
+  const title = document.createElement('div');
+  title.className = 'row-title';
+  title.textContent = label;
+  const sub = document.createElement('div');
+  sub.className = 'password-preview';
+  sub.textContent = password;
+  main.append(title, sub);
+  button.append(icon, main);
+  button.insertAdjacentHTML('beforeend', svgChevron());
+  button.addEventListener('click', (e) => {
+    if (!e.isTrusted) return;
+    send('generate-password', { password }, e, button);
+  });
+  return button;
+}
+
+function renderLocked(state) {
+  content.textContent = '';
+  if (pinMode) return renderPin();
+  const wrap = document.createElement('div');
+  wrap.className = 'unlock';
+  wrap.innerHTML = `<div class="unlock-icon">${svgKey()}</div>`;
+  const title = document.createElement('div');
+  title.className = 'unlock-title';
+  title.textContent = L('Apple Passwords is locked', 'Apple 密码已锁定');
+  const copy = document.createElement('div');
+  copy.className = 'unlock-copy';
+  copy.textContent = state.canUnlock ? L('Unlock once to use passwords and verification codes from iCloud Keychain in this browser.', '解锁一次即可在此浏览器中使用 iCloud 钥匙串中的密码和验证码。') : L('Unlock from the toolbar to fill passwords in this embedded sign-in frame.', '请从工具栏解锁，然后在此嵌入式登录框中填充密码。');
+  wrap.append(title, copy);
+  if (state.canUnlock) {
+    const button = document.createElement('button');
+    button.className = 'primary';
+    button.type = 'button';
+    button.textContent = L('Unlock', '解锁');
+    button.addEventListener('click', (e) => {
+      if (!e.isTrusted) return;
+      button.disabled = true;
+      button.textContent = L('Requesting…', '正在请求…');
+      send('request-unlock', {}, e, button);
+    });
+    wrap.appendChild(button);
+  }
+  content.appendChild(wrap);
+  if (state.canHideEmail) {
+    const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div);
+    const label = document.createElement('div'); label.className = 'section-label'; label.textContent = L('Privacy', '隐私'); content.appendChild(label);
+    content.appendChild(makeHideEmailRow(state));
+  }
+  if (state.canGenerate) {
+    const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div);
+    appendGenerators();
+  }
+}
+
+function renderPin() {
+  content.textContent = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'pin-wrap';
+  const label = document.createElement('p');
+  label.className = 'pin-label';
+  label.textContent = L('Enter the 6-digit code shown by macOS.', '请输入 macOS 显示的 6 位验证码。');
+  const input = document.createElement('input');
+  input.className = 'pin';
+  input.type = 'text';
+  input.inputMode = 'numeric';
+  input.autocomplete = 'off';
+  input.maxLength = 6;
+  input.placeholder = '••••••';
+  input.setAttribute('aria-label', L('6-digit Apple Passwords code', 'Apple 密码 6 位验证码'));
+  input.addEventListener('input', (e) => {
+    if (!e.isTrusted) return;
+    input.value = input.value.replace(/\D/g, '').slice(0, 6);
+    clearStatus();
+    if (input.value.length === 6) {
+      input.disabled = true;
+      send('verify-pin', { pin: input.value }, e, input);
+    }
+  });
+  const actions = document.createElement('div');
+  actions.className = 'pin-actions';
+  const again = document.createElement('button');
+  again.type = 'button';
+  again.className = 'link';
+  again.textContent = L('Request New Code', '获取新验证码');
+  again.addEventListener('click', (e) => {
+    if (!e.isTrusted) return;
+    input.value = '';
+    input.disabled = false;
+    clearStatus();
+    send('new-code', {}, e, again);
+  });
+  actions.appendChild(again);
+  wrap.append(label, input, actions);
+  content.appendChild(wrap);
+  setTimeout(() => input.focus(), 0);
+}
+
+function appendGenerators() {
+  const label = document.createElement('div');
+  label.className = 'section-label';
+  label.textContent = L('Suggested Password', '建议密码');
+  content.appendChild(label);
+  content.appendChild(makeGeneratorRow(L('Strong Password', '强密码'), generateApplePassword()));
+  content.appendChild(makeGeneratorRow(L('Without Symbols', '不含符号'), generateAlphanumeric()));
+}
+
+function renderState(state) {
+  currentState = state;
+  pinMode = false;
+  clearStatus();
+  hostLabel.textContent = safeHost(state.host);
+  content.textContent = '';
+  if (state.locked) {
+    renderLocked(state);
+    reportHeight();
+    return;
+  }
+  if (state.mode === 'otp') {
+    if (state.otpItems?.length) {
+      const label = document.createElement('div');
+      label.className = 'section-label';
+      label.textContent = state.otpItems.length === 1 ? L('Verification Code', '验证码') : L('Verification Codes', '验证码');
+      content.appendChild(label);
+      for (const item of state.otpItems) content.appendChild(makeOtpRow(item));
+    } else {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = L('No verification code saved for this website.', '此网站没有已保存的验证码。');
+      content.appendChild(empty);
+    }
+    reportHeight();
+    return;
+  }
+  if (state.logins?.length) {
+    const label = document.createElement('div');
+    label.className = 'section-label';
+    label.textContent = state.logins.length === 1 ? L('Saved Login', '已保存的登录') : L('Saved Logins', '已保存的登录');
+    content.appendChild(label);
+    for (const login of state.logins) content.appendChild(makeLoginRow(login));
+  }
+  if (state.canHideEmail) {
+    if (state.logins?.length) { const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div); }
+    const label = document.createElement('div');
+    label.className = 'section-label';
+    label.textContent = L('Privacy', '隐私');
+    content.appendChild(label);
+    content.appendChild(makeHideEmailRow(state));
+  }
+  if (state.canGenerate) {
+    if (state.logins?.length || state.canHideEmail) { const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div); }
+    appendGenerators();
+  }
+  if (!state.logins?.length && !state.canGenerate && !state.canHideEmail) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = L('No saved passwords for this website.', '此网站没有已保存的密码。');
+    content.appendChild(empty);
+  }
+  reportHeight();
+}
+
+window.addEventListener('message', (event) => {
+  if (event.data?.type !== 'openpasswords-port') return;
+  if (event.data.secret !== secret || !event.ports?.[0] || port) return;
+  port = event.ports[0];
+  port.onmessage = (e) => {
+    const msg = e.data || {};
+    if (msg.type === 'state') renderState(msg);
+    else if (msg.type === 'hme-generated') {
+      if (currentState) {
+        currentState = { ...currentState, hmeGenerated: String(msg.hme || '') };
+        renderState(currentState);
+      }
+    }
+    else if (msg.type === 'error') showStatus(msg.message);
+    else if (msg.type === 'pin-ready') {
+      pinMode = true;
+      clearStatus();
+      renderPin();
+      reportHeight();
+    } else if (msg.type === 'pin-error') {
+      pinMode = true;
+      renderPin();
+      showStatus(msg.message);
+    }
+  };
+  port.start?.();
+  reportHeight();
+}, { once: false });
+
+closeBtn.addEventListener('click', (e) => {
+  if (!e.isTrusted) return;
+  send('close', {}, e, closeBtn);
+});
+
+window.parent.postMessage({ type: 'openpasswords-inline-ready' }, '*');

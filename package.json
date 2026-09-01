@@ -1,0 +1,38 @@
+{
+  "name": "apple-all-in-one",
+  "version": "1.2.13",
+  "description": "Apple Passwords, passkeys, verification codes, and iCloud Hide My Email in one Chromium extension.",
+  "license": "SEE LICENSES/",
+  "scripts": {
+    "prebuild": "rm -rf build",
+    "build": "node utils/build.js",
+    "prebuild:firefox": "rm -rf build",
+    "build:firefox": "FIREFOX=true node utils/build.js",
+    "typecheck": "tsc --noEmit",
+    "prettier": "prettier --write '**/*.{js,jsx,ts,tsx,json,css,md}'",
+    "prettier:check": "prettier --check '**/*.{js,jsx,ts,tsx,json,css,md}'",
+    "watch": "node utils/watch.js"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "webextension-polyfill": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.243",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@types/webextension-polyfill": "^0.12.1",
+    "copy-webpack-plugin": "^14.0.0",
+    "css-loader": "^6.11.0",
+    "html-webpack-plugin": "^5.6.8",
+    "mini-css-extract-plugin": "^2.10.2",
+    "prettier": "^3.9.6",
+    "ts-loader": "^9.6.2",
+    "typescript": "^5.9.3",
+    "webpack": "^5.110.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
