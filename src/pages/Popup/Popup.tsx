@@ -1834,9 +1834,13 @@ const DetailsView = ({
   onChanged: (deleted: boolean, next?: HmeEmail) => void;
 }) => {
   const [item, setItem] = useState(hme);
-  const [busy, setBusy] = useState<'activation' | 'delete'>();
+  const [busy, setBusy] = useState<'activation' | 'delete' | 'metadata'>();
   const [error, setError] = useState<string>();
   const [copied, setCopied] = useState(false);
+  const [editingMetadata, setEditingMetadata] = useState(false);
+  const [draftLabel, setDraftLabel] = useState(hme.label || '');
+  const [draftNote, setDraftNote] = useState(hme.note || '');
+  const [metadataMessage, setMetadataMessage] = useState<string>();
   const [recentMail, setRecentMail] = useState<RecentAliasMessage[]>();
   const [mailStatus, setMailStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [mailError, setMailError] = useState<string>();
@@ -1844,6 +1848,10 @@ const DetailsView = ({
 
   useEffect(() => {
     setItem(hme);
+    setDraftLabel(hme.label || '');
+    setDraftNote(hme.note || '');
+    setEditingMetadata(false);
+    setMetadataMessage(undefined);
     setRecentMail(undefined);
     setMailStatus('idle');
     setMailError(undefined);
@@ -1854,6 +1862,49 @@ const DetailsView = ({
     await navigator.clipboard.writeText(item.hme);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1300);
+  };
+
+  const beginMetadataEdit = () => {
+    setDraftLabel(item.label || '');
+    setDraftNote(item.note || '');
+    setMetadataMessage(undefined);
+    setError(undefined);
+    setEditingMetadata(true);
+  };
+
+  const cancelMetadataEdit = () => {
+    setDraftLabel(item.label || '');
+    setDraftNote(item.note || '');
+    setEditingMetadata(false);
+  };
+
+  const saveMetadata = async () => {
+    const label = draftLabel.trim();
+    const note = draftNote.trim();
+    if (!label) {
+      setError(tr('Label cannot be empty.', '标签不能为空。'));
+      return;
+    }
+    if (label === (item.label || '') && note === (item.note || '')) {
+      setEditingMetadata(false);
+      return;
+    }
+
+    setBusy('metadata');
+    setError(undefined);
+    setMetadataMessage(undefined);
+    try {
+      await new PremiumMailSettings(client).updateHmeMetadata(item.anonymousId, label, note);
+      const next = { ...item, label, note };
+      setItem(next);
+      setEditingMetadata(false);
+      setMetadataMessage(tr('Label and note saved.', '标签和备注已保存。'));
+      onChanged(false, next);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(undefined);
+    }
   };
 
   const toggle = async () => {
@@ -1960,9 +2011,25 @@ const DetailsView = ({
         <button type="button" className="hme-pill-button" onClick={copy}><Symbol name={copied ? 'check' : 'copy'} size={15} />{copied ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>
       </section>
 
-      <div className="hme-section-label">{tr('Details', '详情')}</div>
+      <div className="hme-section-label hme-detail-section-heading">
+        <span>{tr('Details', '详情')}</span>
+        {!editingMetadata && (
+          <button type="button" disabled={!!busy} onClick={beginMetadataEdit}>{tr('Edit', '编辑')}</button>
+        )}
+      </div>
       <section className="hme-group hme-detail-group">
-        <DetailRow label={tr('Label', '标签')}><strong>{item.label || '—'}</strong></DetailRow>
+        <DetailRow label={tr('Label', '标签')}>
+          {editingMetadata ? (
+            <input
+              className="hme-metadata-input"
+              value={draftLabel}
+              maxLength={255}
+              autoFocus
+              aria-label={tr('Label', '标签')}
+              onChange={(event) => setDraftLabel(event.target.value)}
+            />
+          ) : <strong>{item.label || '—'}</strong>}
+        </DetailRow>
         <DetailRow label={tr('Website', '网站')}>
           {resolveWebsite(item) ? (
             <span className="hme-website-value">
@@ -1985,8 +2052,31 @@ const DetailsView = ({
                 ? tr('Could not refresh', '无法刷新')
                 : tr('Not found in recent scan', '近期扫描中未找到')}</span></DetailRow>
         <DetailRow label={tr('Status', '状态')}><span className={cx('hme-status-text', item.isActive && 'is-active')}><i />{item.isActive ? tr('Active', '已启用') : tr('Inactive', '已停用')}</span></DetailRow>
-        {item.note && <DetailRow label={tr('Note', '备注')}><span>{item.note}</span></DetailRow>}
+        <DetailRow label={tr('Note', '备注')}>
+          {editingMetadata ? (
+            <textarea
+              className="hme-metadata-note"
+              value={draftNote}
+              maxLength={500}
+              rows={3}
+              aria-label={tr('Note', '备注')}
+              placeholder={tr('Optional note', '可选备注')}
+              onChange={(event) => setDraftNote(event.target.value)}
+            />
+          ) : <span>{item.note || '—'}</span>}
+        </DetailRow>
+        {editingMetadata && (
+          <div className="hme-metadata-actions">
+            <button type="button" disabled={busy === 'metadata'} onClick={cancelMetadataEdit}>{tr('Cancel', '取消')}</button>
+            <button type="button" className="is-primary" disabled={busy === 'metadata'} onClick={() => void saveMetadata()}>
+              {busy === 'metadata' && <Spinner compact />}
+              {tr('Save', '保存')}
+            </button>
+          </div>
+        )}
       </section>
+
+      {metadataMessage && <div className="hme-metadata-message" role="status"><Symbol name="check" size={13} />{metadataMessage}</div>}
 
       <div className="hme-section-label hme-mail-section-heading">
         <span>{tr('Recent Mail', '近期邮件')}</span>

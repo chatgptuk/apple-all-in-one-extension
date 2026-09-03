@@ -94,6 +94,7 @@
     {
       "resources": [
         "src/inline.html",
+        "src/password-generator.js",
         "src/inline.css",
         "src/inline.js"
       ],

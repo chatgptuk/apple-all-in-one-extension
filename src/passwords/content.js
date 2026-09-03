@@ -312,8 +312,12 @@ function isSignupContext(el) {
   return remember(matched);
 }
 
-function preparedPasswordForThisSite() {
+function preparedPasswordForThisSite(field) {
   if (!lastGenerated || lastGenerated.host !== location.hostname || Date.now() - lastGenerated.at >= 600000) return '';
+  if (field && !passwordMatchesField(lastGenerated.password || '', field)) {
+    lastGenerated = null;
+    return '';
+  }
   return lastGenerated.password || '';
 }
 
@@ -327,6 +331,86 @@ function signupPasswordTarget(anchor) {
     if (preferred) return preferred;
   }
   return null;
+}
+
+function positivePasswordLength(value) {
+  const length = Number(value);
+  return Number.isInteger(length) && length > 0 && length <= 128 ? length : undefined;
+}
+
+function referencedText(field, attribute) {
+  const ids = String(field.getAttribute(attribute) || '').trim().split(/\s+/).filter(Boolean);
+  return ids.map((id) => field.ownerDocument.getElementById(id)?.textContent || '').join(' ');
+}
+
+function passwordRuleText(field) {
+  const parts = [
+    attrBlob(field),
+    field.getAttribute('title'),
+    field.getAttribute('data-password-rules'),
+    field.getAttribute('data-requirements'),
+    referencedText(field, 'aria-describedby'),
+  ];
+  const nearby = field.form?.innerText || field.parentElement?.innerText || '';
+  parts.push(String(nearby).slice(0, 4000));
+  return parts.filter(Boolean).join(' ').replace(/\s+/g, ' ').slice(0, 6000);
+}
+
+function hintedPasswordLength(text, kind) {
+  const patterns = kind === 'min'
+    ? [
+        /(?:at least|minimum|min\.?|no fewer than)\s*(\d{1,3})\s*(?:characters?|chars?)?/i,
+        /(?:至少|最少|不得少于)\s*(\d{1,3})\s*(?:个|位)?(?:字符|字元|位)?/i,
+      ]
+    : [
+        /(?:at most|maximum|max\.?|no more than)\s*(\d{1,3})\s*(?:characters?|chars?)?/i,
+        /(?:至多|最多|不得超过)\s*(\d{1,3})\s*(?:个|位)?(?:字符|字元|位)?/i,
+      ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const length = positivePasswordLength(match?.[1]);
+    if (length) return length;
+  }
+  return undefined;
+}
+
+function passwordRequirementsFor(anchor) {
+  const field = isPasswordish(anchor) ? anchor : signupPasswordTarget(anchor);
+  if (!(field instanceof HTMLInputElement)) return {};
+  const hints = passwordRuleText(field);
+  const attributeMin = positivePasswordLength(field.getAttribute('minlength'));
+  const attributeMax = positivePasswordLength(field.getAttribute('maxlength'));
+  const hintedMin = hintedPasswordLength(hints, 'min');
+  const hintedMax = hintedPasswordLength(hints, 'max');
+  const pattern = String(field.getAttribute('pattern') || '').slice(0, 256);
+  const allowedSymbols = hints.match(/(?:allowed|valid|permitted|use only|可用|允许|僅限|仅限)(?:\s+(?:special\s+)?(?:characters?|symbols?|字符|符号))*[^!@#$%^&*_=+?]{0,32}([!@#$%^&*_=+?]{1,16})/i)?.[1];
+  const forbidSymbols = /(?:letters?\s+and\s+(?:numbers?|digits?)\s+only|alphanumeric\s+only|no\s+(?:special\s+)?(?:characters?|symbols?)|只能使用字母和数字|仅限字母和数字|不允许(?:特殊)?符号|不得包含(?:特殊)?符号)/i.test(hints);
+  return {
+    minLength: Math.max(attributeMin || 0, hintedMin || 0) || undefined,
+    maxLength: attributeMax || hintedMax,
+    pattern: pattern || undefined,
+    requireLower: /(?:lowercase|lower-case|small letter|小写字母|小寫字母)/i.test(hints),
+    requireUpper: /(?:uppercase|upper-case|capital letter|大写字母|大寫字母)/i.test(hints),
+    requireDigit: /(?:at least one|must (?:include|contain|have)|requires?)[^.!?]{0,40}(?:number|digit)|(?:数字|數字)/i.test(hints),
+    requireSymbol: !forbidSymbols && /(?:at least one|must (?:include|contain|have)|requires?)[^.!?]{0,40}(?:special character|symbol)|(?:特殊字符|特殊字元|符号|符號)/i.test(hints),
+    forbidSymbols,
+    allowedSymbols,
+  };
+}
+
+function passwordMatchesField(password, field) {
+  if (!(field instanceof HTMLInputElement)) return true;
+  const minLength = positivePasswordLength(field.getAttribute('minlength'));
+  const maxLength = positivePasswordLength(field.getAttribute('maxlength'));
+  if (minLength && password.length < minLength) return false;
+  if (maxLength && password.length > maxLength) return false;
+  const pattern = String(field.getAttribute('pattern') || '');
+  if (!pattern || pattern.length > 256) return true;
+  let compiled;
+  try { compiled = new RegExp(`^(?:${pattern})$`, 'v'); } catch {
+    try { compiled = new RegExp(`^(?:${pattern})$`, 'u'); } catch { return true; }
+  }
+  return compiled.test(password);
 }
 
 function isAllowlistedLoginHost(host) {
@@ -710,7 +794,8 @@ async function reloadUiState() {
       canSmartSignup: !hasSavedLogins && wantsAlias && isSignupContext(anchor) && !!hme?.ready,
       hasAppleSignIn: !hasSavedLogins && !!appleSignInControl(),
       existingHme: null,
-      pendingPassword: preparedPasswordForThisSite(),
+      pendingPassword: preparedPasswordForThisSite(anchor),
+      passwordRequirements: passwordRequirementsFor(anchor),
       canUnlock: window === window.top,
     };
   }
@@ -781,6 +866,11 @@ async function handleUiAction(msg) {
 
   if (msg.type === 'smart-signup') {
     if (!isHideEmailField(uiAnchor) || typeof msg.password !== 'string' || msg.password.length < 8) return;
+    const passwordField = signupPasswordTarget(uiAnchor);
+    if (passwordField && !passwordMatchesField(msg.password, passwordField)) {
+      postUi({ type: 'error', message: L('The page rejected this password under its declared rules. Reopen the chooser to generate another compatible password.', '此密码不符合网页声明的规则，请重新打开选择器生成另一条兼容密码。') });
+      return;
+    }
     let alias = typeof msg.hme === 'string' && msg.hme.includes('@') ? msg.hme : '';
     if (!alias) {
       const result = await sendRuntimeMessage({ type: 'hme:create-for-site' }).catch((e) => ({ ok: false, error: String(e) }));
@@ -793,7 +883,6 @@ async function handleUiAction(msg) {
 
     const anchor = uiAnchor;
     setValue(anchor, alias);
-    const passwordField = signupPasswordTarget(anchor);
     if (passwordField) fillGeneratedPassword(passwordField, msg.password);
     else lastGenerated = { host: location.hostname, password: msg.password, at: Date.now(), pending: true };
     anchor.focus();
@@ -803,6 +892,10 @@ async function handleUiAction(msg) {
 
   if (msg.type === 'generate-password') {
     if (!isNewPasswordField(uiAnchor) || typeof msg.password !== 'string' || msg.password.length < 8) return;
+    if (!passwordMatchesField(msg.password, uiAnchor)) {
+      postUi({ type: 'error', message: L('The page rejected this password under its declared rules. Reopen the chooser to generate another compatible password.', '此密码不符合网页声明的规则，请重新打开选择器生成另一条兼容密码。') });
+      return;
+    }
     if (fillGeneratedPassword(uiAnchor, msg.password)) closeUi();
     return;
   }
@@ -936,7 +1029,8 @@ async function openForField(field) {
     canSmartSignup: !hasSavedLogins && isHideEmailField(field) && isSignupContext(field) && !!hme?.ready,
     hasAppleSignIn: !hasSavedLogins && !!appleSignInControl(),
     existingHme: null,
-    pendingPassword: preparedPasswordForThisSite(),
+    pendingPassword: preparedPasswordForThisSite(field),
+    passwordRequirements: passwordRequirementsFor(field),
     canUnlock: window === window.top,
   };
   const hasItems = otp ? state.otpItems.length > 0 : state.logins.length > 0;

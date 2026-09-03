@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { webcrypto } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
@@ -39,6 +40,14 @@ const loadICloudClientModule = (fetchImpl) => {
     setTimeout,
   });
   return module.exports;
+};
+
+const loadPasswordGenerator = () => {
+  const source = readProjectFile('src/passwords/password-generator.js');
+  const sandbox = { crypto: webcrypto, Uint32Array };
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  return sandbox.AppleAllInOnePasswordGenerator;
 };
 
 test('mail verification-code detection favors contextual codes and rejects ordinary numbers', () => {
@@ -126,9 +135,93 @@ test('smart signup keeps alias discovery in the extension and requires a chooser
   );
   assert.match(inline, /send\('smart-signup'/);
   assert.match(inline, /send\('use-apple-sign-in'/);
-  assert.match(inline, /const separator = '!'/);
-  assert.match(inline, /\.join\(separator\)/);
-  assert.doesNotMatch(inline, /\.join\('-'\)/);
+  assert.match(inline, /generateCompatiblePassword\(state\.passwordRequirements/);
+  assert.doesNotMatch(readProjectFile('src/passwords/password-generator.js'), /const SYMBOLS = '[^']*-/);
+});
+
+test('smart password generation adapts to declared page rules and revalidates before fill', () => {
+  const generator = loadPasswordGenerator();
+  const content = readProjectFile('src/passwords/content.js');
+  const inline = readProjectFile('src/passwords/inline.js');
+  const manifest = JSON.parse(readProjectFile('src/manifest.json'));
+
+  const alphanumeric = generator.generateCompatiblePassword({
+    minLength: 12,
+    maxLength: 16,
+    pattern: '(?=.*[A-Z])(?=.*[a-z])(?=.*\\d)[A-Za-z\\d]{12,16}',
+    requireLower: true,
+    requireUpper: true,
+    requireDigit: true,
+    forbidSymbols: true,
+  });
+  assert.equal(alphanumeric.compatible, true);
+  assert.match(alphanumeric.password, /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)[A-Za-z\d]{12,16}$/);
+  assert.doesNotMatch(alphanumeric.password, /-/);
+
+  const intersectedLength = generator.generateCompatiblePassword({
+    minLength: 8,
+    maxLength: 40,
+    pattern: '[A-Za-z0-9]{10,14}',
+  });
+  assert.equal(intersectedLength.compatible, true);
+  assert.ok(intersectedLength.password.length >= 10 && intersectedLength.password.length <= 14);
+
+  const symbolic = generator.generateCompatiblePassword({
+    minLength: 14,
+    maxLength: 20,
+    requireLower: true,
+    requireUpper: true,
+    requireDigit: true,
+    requireSymbol: true,
+    allowedSymbols: '!@#',
+  });
+  assert.equal(symbolic.compatible, true);
+  assert.match(symbolic.password, /[!@#]/);
+  assert.doesNotMatch(symbolic.password, /-/);
+
+  assert.match(content, /function passwordRequirementsFor/);
+  assert.match(content, /field\.getAttribute\('minlength'\)/);
+  assert.match(content, /field\.getAttribute\('maxlength'\)/);
+  assert.match(content, /field\.getAttribute\('pattern'\)/);
+  assert.match(content, /passwordMatchesField\(msg\.password, passwordField\)/);
+  assert.match(content, /passwordRequirements: passwordRequirementsFor\(field\)/);
+  assert.match(inline, /Compatible Strong Password/);
+  assert.ok(manifest.web_accessible_resources[0].resources.includes('src/password-generator.js'));
+});
+
+test('Hide My Email metadata editor saves label and note through iCloud', async () => {
+  const calls = [];
+  const { default: ICloudClient, PremiumMailSettings } = loadICloudClientModule(async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, status: 200, json: async () => ({ success: true, result: {} }) };
+  });
+  const client = new ICloudClient(
+    'https://setup.icloud.com/setup/ws/1',
+    { premiummailsettings: { url: 'https://p170-maildomainws.icloud.com', status: 'active' } },
+    '12345'
+  );
+
+  await new PremiumMailSettings(client).updateHmeMetadata('alias-id', 'New label', 'Private note');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://p170-maildomainws.icloud.com/v1/hme/updateMetaData');
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    anonymousId: 'alias-id',
+    label: 'New label',
+    note: 'Private note',
+  });
+
+  await new PremiumMailSettings(client).updateHmeMetadata('alias-id', 'New label', '');
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    anonymousId: 'alias-id',
+    label: 'New label',
+    note: '',
+  });
+
+  const popup = readProjectFile('src/pages/Popup/Popup.tsx');
+  assert.match(popup, /const saveMetadata = async/);
+  assert.match(popup, /updateHmeMetadata\(item\.anonymousId, label, note\)/);
+  assert.match(popup, /Label and note saved\./);
+  assert.match(popup, /标签和备注已保存。/);
 });
 
 test('multi-step signup pages keep Hide My Email reuse eligible across SPA updates', () => {

@@ -33,6 +33,7 @@ It is not currently suitable for Chrome Web Store submission, managed enterprise
 - Connects to the macOS `com.apple.passwordmanager` native helper.
 - Uses the Open Passwords SRP/AES-GCM protocol for encrypted credential queries.
 - Finds, fills, saves, and updates passwords.
+- Generates strong passwords that adapt to a page's declared length, pattern, character-class, and symbol rules, then validates the result again before filling. Generated passwords never use `-`.
 - Prioritizes credentials whose saved site exactly matches the current hostname, then shows related-domain matches.
 - Supports passkey bridging and optional suppression of silent conditional-passkey suggestions.
 - Shows saved verification-code entries and fills codes with origin/frame checks.
@@ -43,6 +44,7 @@ Clicking a saved login fills the current page and expands its details in the pop
 ### iCloud+ Hide My Email
 
 - Creates, reserves, fills, searches, activates, deactivates, and deletes private addresses.
+- Edits the label and optional note of an existing private address from its detail view.
 - Reuses the address list from a two-minute session cache; stale data is shown immediately while a silent refresh runs.
 - Supports direct deletion of active aliases by performing `deactivate → delete`.
 - Supports multi-select bulk deactivate/delete with retryable partial failures.
@@ -62,6 +64,8 @@ Hide My Email uses the browser's existing signed-in iCloud.com session. The exte
 - Keeps Hide My Email creation available from the editable-field context menu instead of duplicating it in every chooser.
 
 No private address is created merely because an email field receives focus. The user must choose **Create Private Address**, review the candidate, and then choose **Use**.
+
+Password compatibility is based on rules the page exposes through HTML attributes and nearby guidance. A site can still enforce additional JavaScript or server-side rules that are invisible to extensions; in that case Apple All-In-One stops instead of silently filling a known-incompatible password.
 
 ## Requirements and installation
 

@@ -4,6 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 import { orderLoginsForHost } from '../src/passwords/core/login-order.js';
+import { createPasswordCache } from '../src/passwords/core/password-cache.js';
 import { ApplePasswords } from '../src/passwords/core/protocol.js';
 
 const readProjectFile = (path) =>
@@ -89,6 +90,49 @@ test('popup does not make verification-code metadata block the password list', (
   );
   assert.match(popup, /setSiteItemsLoading\(false\)[\s\S]{0,500}setOtpItemsLoading\(true\)/);
   assert.match(popup, /10_000/);
+});
+
+test('recent password fills reuse the same in-memory credential without extending it forever', () => {
+  const background = readProjectFile('src/passwords/core/background.js');
+  let clock = 0;
+  const cache = createPasswordCache({
+    idleTtlMs: 120_000,
+    maxTtlMs: 300_000,
+    now: () => clock,
+  });
+  const credential = { username: 'Person@example.com', password: 'secret' };
+
+  cache.set('LOGIN.EXAMPLE.COM', credential);
+  clock = 110_000;
+  assert.equal(cache.get('login.example.com', ' person@example.com\u200B '), credential);
+  clock = 220_000;
+  assert.equal(cache.get('login.example.com', 'PERSON@EXAMPLE.COM'), credential);
+  clock = 300_001;
+  assert.equal(cache.get('login.example.com', 'Person@example.com'), null);
+  assert.match(
+    background,
+    /createPasswordCache\(\{ idleTtlMs: 2 \* 60_000, maxTtlMs: 5 \* 60_000 \}\)/
+  );
+  assert.match(background, /if \(s !== State\.Unlocked\) pwCacheClear\(\)/);
+});
+
+test('password fill cache expires after inactivity and clears on demand', () => {
+  let clock = 0;
+  const cache = createPasswordCache({
+    idleTtlMs: 120_000,
+    maxTtlMs: 300_000,
+    now: () => clock,
+  });
+  const credential = { username: 'person', password: 'secret' };
+
+  cache.set('example.com', credential);
+  clock = 120_001;
+  assert.equal(cache.get('example.com', 'person'), null);
+
+  clock = 130_000;
+  cache.set('example.com', credential);
+  cache.clear();
+  assert.equal(cache.get('example.com', 'person'), null);
 });
 
 test('popup saved-login clicks fill the page and open a popup-only secret detail card', () => {

@@ -458,6 +458,22 @@ button { color: inherit; }
 .hme-detail-row > span { color: var(--hme-secondary-label); font-size: 11.5px; }
 .hme-detail-row > div { min-width: 0; text-align: right; font-size: 11.5px; overflow-wrap: anywhere; }
 .hme-detail-row strong { font-weight: 550; }
+.hme-detail-section-heading { display: flex; align-items: center; justify-content: space-between; }
+.hme-detail-section-heading button { margin: -5px -3px -3px 0; padding: 4px 7px; border: 0; border-radius: 8px; color: var(--hme-blue); background: transparent; font: inherit; letter-spacing: 0; text-transform: none; }
+.hme-detail-section-heading button:hover { background: var(--hme-fill); }
+.hme-detail-section-heading button:disabled { opacity: .45; }
+.hme-metadata-input,
+.hme-metadata-note { box-sizing: border-box; width: 100%; border: .5px solid var(--hme-separator); border-radius: 8px; color: var(--hme-label); background: var(--hme-fill); font: inherit; outline: none; }
+.hme-metadata-input { min-height: 30px; padding: 5px 8px; text-align: right; }
+.hme-metadata-note { min-height: 64px; padding: 7px 8px; resize: vertical; line-height: 1.35; text-align: left; }
+.hme-metadata-input:focus,
+.hme-metadata-note:focus { border-color: color-mix(in srgb, var(--hme-blue) 55%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--hme-blue) 12%, transparent); }
+.hme-metadata-actions { min-height: 43px; padding: 8px 12px; position: relative; display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+.hme-metadata-actions::before { content: ''; position: absolute; top: 0; left: 12px; right: 0; height: .5px; background: var(--hme-separator); }
+.hme-metadata-actions button { min-height: 28px; padding: 0 11px; border: 0; border-radius: 14px; color: var(--hme-blue); background: var(--hme-fill); font-size: 11px; font-weight: 550; }
+.hme-metadata-actions button.is-primary { display: inline-flex; align-items: center; gap: 5px; color: #fff; background: var(--hme-blue); }
+.hme-metadata-actions button:disabled { opacity: .5; }
+.hme-metadata-message { margin: -3px 4px 0; display: flex; align-items: center; gap: 5px; color: #248a3d; font-size: 10.5px; }
 .hme-blue-text { color: var(--hme-blue); }
 .hme-website-value {
   display: inline-flex;

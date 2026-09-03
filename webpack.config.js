@@ -86,6 +86,7 @@ const options = {
         { from: 'src/rules.json', to: path.join(__dirname, 'build'), force: true },
         { from: 'src/_locales', to: path.join(__dirname, 'build', '_locales'), force: true },
         { from: 'src/passwords/inline.html', to: path.join(__dirname, 'build', 'src', 'inline.html'), force: true },
+        { from: 'src/passwords/password-generator.js', to: path.join(__dirname, 'build', 'src', 'password-generator.js'), force: true },
         { from: 'src/passwords/inline.css', to: path.join(__dirname, 'build', 'src', 'inline.css'), force: true },
         { from: 'src/passwords/inline.js', to: path.join(__dirname, 'build', 'src', 'inline.js'), force: true },
         { from: 'LICENSES', to: path.join(__dirname, 'build', 'licenses'), force: true },

@@ -2,6 +2,7 @@
 
 import { ApplePasswords, State } from "./protocol.js";
 import { orderLoginsForHost } from "./login-order.js";
+import { createPasswordCache } from "./password-cache.js";
 
 const client = new ApplePasswords();
 
@@ -94,26 +95,15 @@ function uniqueByUsername(logins) {
 // what we last filled per tab, so a popup refresh can re-fill the page with a fresh read
 const lastFillByTab = new Map(); // tabId -> { host, username }
 
-// short-lived cache of decrypted passwords so re-filling the same login skips a second Touch
-// ID (apple prompts every read). plaintext in worker memory up to the TTL, cleared on lock
-const PW_CACHE_TTL_MS = 30_000; // 30 seconds; plaintext cache remains memory-only
-const pwCache = new Map(); // `${host}\n${username lowercased}` -> { cred, at }
-function pwCacheKey(host, username) {
-  return `${host}\n${(username || "").toLowerCase()}`;
-}
+// Re-filling the exact host/account shortly after Touch ID reuses the decrypted credential.
+// The cache is memory-only, expires after two idle minutes (five minutes maximum), and is
+// cleared whenever Apple locks the session, the worker restarts, or the user refreshes.
+const pwCache = createPasswordCache({ idleTtlMs: 2 * 60_000, maxTtlMs: 5 * 60_000 });
 function pwCacheGet(host, username) {
-  const k = pwCacheKey(host, username);
-  const hit = pwCache.get(k);
-  if (!hit) return null;
-  if (Date.now() - hit.at > PW_CACHE_TTL_MS) {
-    pwCache.delete(k);
-    return null;
-  }
-  return hit.cred;
+  return pwCache.get(host, username);
 }
 function pwCacheSet(host, cred) {
-  if (!host || !cred?.username) return;
-  pwCache.set(pwCacheKey(host, cred.username), { cred, at: Date.now() });
+  pwCache.set(host, cred);
 }
 function pwCacheClear() {
   pwCache.clear();

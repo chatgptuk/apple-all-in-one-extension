@@ -198,7 +198,11 @@ export class PremiumMailSettings {
       `${this.baseUrl}/hme/updateMetaData`,
       { data: { anonymousId, label, note } }
     )) as PremiumMailSettingsResponse;
-    if (!response.success) throw new UpdateHmeMetadataException('Failed to update HME metadata');
+    if (!response.success) {
+      throw new UpdateHmeMetadataException(
+        response.error?.errorMessage || 'Failed to update HME metadata'
+      );
+    }
   }
 
   async deactivateHme(anonymousId: string): Promise<void> {

@@ -106,11 +106,16 @@ function makeSmartSignupRow(state) {
   button.addEventListener('click', (e) => {
     if (!e.isTrusted) return;
     clearStatus();
+    const generated = generateCompatiblePassword(state.passwordRequirements, true);
+    if (!generated.password) {
+      showStatus(L('This website’s password rules could not be satisfied safely. Use its own password generator or review the field requirements.', '无法安全满足此网站的密码规则，请使用网站自带的密码生成器或检查输入框要求。'));
+      return;
+    }
     button.disabled = true;
     action.textContent = L('Preparing…', '正在准备…');
     send('smart-signup', {
       hme: state.existingHme?.hme || '',
-      password: generateApplePassword(),
+      password: generated.password,
     }, e, button);
   });
   return button;
@@ -166,42 +171,10 @@ function reportHeight() {
   });
 }
 
-function randomBelow(n) {
-  const max = 0x100000000;
-  const limit = max - (max % n);
-  const a = new Uint32Array(1);
-  do crypto.getRandomValues(a); while (a[0] >= limit);
-  return a[0] % n;
-}
-function pick(set) { return set[randomBelow(set.length)]; }
-
-function generateApplePassword() {
-  const C = 'bcdfghjkmnpqrstvwxz';
-  const V = 'aeiouy';
-  const separator = '!';
-  const groups = [];
-  for (let g = 0; g < 3; g++) groups.push([pick(C), pick(V), pick(C), pick(C), pick(V), pick(C)]);
-  const slots = [[0,5],[1,0],[1,5],[2,0],[2,5]];
-  const [dg, dp] = slots[randomBelow(slots.length)];
-  groups[dg][dp] = String(randomBelow(10));
-  let ug, up;
-  do { ug = randomBelow(3); up = randomBelow(6); } while (ug === dg && up === dp);
-  groups[ug][up] = groups[ug][up].toUpperCase();
-  return groups.map((g) => g.join('')).join(separator);
-}
-
-function generateAlphanumeric(len = 15) {
-  const lower = 'abcdefghijklmnopqrstuvwxyz';
-  const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  const digit = '0123456789';
-  const all = lower + upper + digit;
-  const chars = [pick(lower), pick(upper), pick(digit)];
-  while (chars.length < len) chars.push(pick(all));
-  for (let i = chars.length - 1; i > 0; i--) {
-    const j = randomBelow(i + 1);
-    [chars[i], chars[j]] = [chars[j], chars[i]];
-  }
-  return chars.join('');
+function generateCompatiblePassword(requirements = {}, allowSymbols = true) {
+  const generator = globalThis.AppleAllInOnePasswordGenerator;
+  if (!generator?.generateCompatiblePassword) return { password: '', compatible: false };
+  return generator.generateCompatiblePassword(requirements, { allowSymbols });
 }
 
 function makeLoginRow(login) {
@@ -357,7 +330,7 @@ function renderPin() {
   setTimeout(() => input.focus(), 0);
 }
 
-function appendGenerators(pendingPassword = '') {
+function appendGenerators(pendingPassword = '', requirements = {}) {
   const label = document.createElement('div');
   label.className = 'section-label';
   label.textContent = pendingPassword ? L('Prepared Signup Password', '已准备的注册密码') : L('Suggested Password', '建议密码');
@@ -366,8 +339,20 @@ function appendGenerators(pendingPassword = '') {
     content.appendChild(makeGeneratorRow(L('Use Prepared Password', '使用已准备密码'), pendingPassword));
     return;
   }
-  content.appendChild(makeGeneratorRow(L('Strong Password', '强密码'), generateApplePassword()));
-  content.appendChild(makeGeneratorRow(L('Without Symbols', '不含符号'), generateAlphanumeric()));
+  const strong = generateCompatiblePassword(requirements, true);
+  const alphanumeric = generateCompatiblePassword(requirements, false);
+  if (strong.password) {
+    content.appendChild(makeGeneratorRow(strong.adapted ? L('Compatible Strong Password', '兼容此网站的强密码') : L('Strong Password', '强密码'), strong.password));
+  }
+  if (alphanumeric.password && (!strong.password || /[^A-Za-z0-9]/.test(strong.password))) {
+    content.appendChild(makeGeneratorRow(L('Without Symbols', '不含符号'), alphanumeric.password));
+  }
+  if (!strong.password && !alphanumeric.password) {
+    const empty = document.createElement('div');
+    empty.className = 'empty error';
+    empty.textContent = L('This website’s declared password rules could not be satisfied safely.', '无法安全满足此网站声明的密码规则。');
+    content.appendChild(empty);
+  }
 }
 
 function renderState(state) {
@@ -427,7 +412,7 @@ function renderState(state) {
   }
   if (state.canGenerate) {
     if (hasSection) { const div = document.createElement('div'); div.className = 'divider'; content.appendChild(div); }
-    appendGenerators(state.pendingPassword || '');
+    appendGenerators(state.pendingPassword || '', state.passwordRequirements || {});
     hasSection = true;
   }
   if (!hasSection) {
