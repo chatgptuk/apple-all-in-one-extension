@@ -988,14 +988,14 @@ const PasswordsView = () => {
                 <button
                   type="button"
                   className="unified-login-button"
-                  onClick={() => void fillAndShowLogin(login, loginKey)}
+                  onClick={() => expanded ? clearLoginDetail() : void fillAndShowLogin(login, loginKey)}
                   disabled={!!busy}
                   aria-expanded={expanded}
                 >
                   <span className="hme-symbol-tile is-purple"><Symbol name="key" size={17} /></span>
                   <span className="unified-row-copy">
                     <strong>{login.username || tr('(no username)', '(无用户名)')}</strong>
-                    <small>{tr('Fill page and open details', '填充网页并展开详情')}</small>
+                    <small>{expanded ? tr('Collapse details', '收起详情') : tr('Fill page and open details', '填充网页并展开详情')}</small>
                   </span>
                   {loginBusy ? <Spinner compact /> : <Symbol name="chevron-right" size={15} className={cx('unified-login-chevron', expanded && 'is-expanded')} />}
                 </button>
@@ -1058,14 +1058,14 @@ const PasswordsView = () => {
                 <button
                   type="button"
                   className="unified-login-button"
-                  onClick={() => void fillAndShowOtp(item, otpKey)}
+                  onClick={() => expanded ? clearLoginDetail() : void fillAndShowOtp(item, otpKey)}
                   disabled={!!busy}
                   aria-expanded={expanded}
                 >
                   <span className="hme-symbol-tile is-blue"><Symbol name="code" size={17} /></span>
                   <span className="unified-row-copy">
                     <strong>{item.username || tr('Verification Code', '验证码')}</strong>
-                    <small>{tr('Fill page and open details', '填充网页并展开详情')}</small>
+                    <small>{expanded ? tr('Collapse details', '收起详情') : tr('Fill page and open details', '填充网页并展开详情')}</small>
                   </span>
                   {otpBusy ? <Spinner compact /> : <Symbol name="chevron-right" size={15} className={cx('unified-login-chevron', expanded && 'is-expanded')} />}
                 </button>

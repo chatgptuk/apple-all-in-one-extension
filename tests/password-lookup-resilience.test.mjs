@@ -127,6 +127,20 @@ test('standalone verification-code clicks fill and reveal from one secret read',
   assert.doesNotMatch(popup, /fillAndShowOtp[\s\S]{0,900}window\.close\(\)/);
 });
 
+test('expanded password and verification-code rows collapse without another secret request', () => {
+  const popup = readProjectFile('src/pages/Popup/Popup.tsx');
+
+  assert.match(
+    popup,
+    /onClick=\{\(\) => expanded \? clearLoginDetail\(\) : void fillAndShowLogin\(login, loginKey\)\}/
+  );
+  assert.match(
+    popup,
+    /onClick=\{\(\) => expanded \? clearLoginDetail\(\) : void fillAndShowOtp\(item, otpKey\)\}/
+  );
+  assert.match(popup, /expanded \? tr\('Collapse details', '收起详情'\)/);
+});
+
 test('popup exposes unlock flows without a manual password-session lock action', () => {
   const popup = readProjectFile('src/pages/Popup/Popup.tsx');
   const background = readProjectFile('src/passwords/core/background.js');
