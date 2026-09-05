@@ -3,11 +3,22 @@ export class UnsuccessfulRequestError extends Error {
     message: string,
     readonly status: number,
     readonly method: string,
-    readonly url: string
+    readonly url: string,
+    readonly retryAfterMs?: number
   ) {
     super(message);
     this.name = 'UnsuccessfulRequestError';
   }
+}
+
+export type ICloudFailureKind = 'expired' | 'rate_limited' | 'offline' | 'unavailable';
+export function classifyICloudFailure(error: unknown): ICloudFailureKind {
+  if (error instanceof UnsuccessfulRequestError) {
+    if (error.status === 401 || error.status === 403) return 'expired';
+    if (error.status === 429) return 'rate_limited';
+    return 'unavailable';
+  }
+  return error instanceof TypeError || (error as Error)?.name === 'AbortError' ? 'offline' : 'unavailable';
 }
 
 export type ICloudAuthenticationFailureHandler = (
@@ -56,7 +67,12 @@ class ICloudClient {
           `Request to ${method} ${url} failed with status code ${response.status}`,
           response.status,
           method,
-          url
+          url,
+          response.status === 429 ? Math.max(1000, (() => {
+            const value = response.headers?.get('Retry-After');
+            if (!value) return 30_000;
+            return /^\d+$/.test(value) ? Number(value) * 1000 : (Date.parse(value) - Date.now()) || 30_000;
+          })()) : undefined
         );
         if (
           this.onAuthenticationFailure &&
@@ -92,9 +108,15 @@ class ICloudClient {
     try {
       await this.validateToken();
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      if (classifyICloudFailure(error) === 'expired') return false;
+      // A transport failure does not prove that the session expired.
+      throw error;
     }
+  }
+
+  public async reportAuthenticationFailure(error: UnsuccessfulRequestError): Promise<void> {
+    if (classifyICloudFailure(error) === 'expired') await this.onAuthenticationFailure?.(error);
   }
 
   public async validateToken(): Promise<void> {

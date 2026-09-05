@@ -4,19 +4,13 @@ function normalizeHost(host) {
     .toLowerCase();
 }
 
-function normalizeUsername(username) {
-  return String(username || '')
-    .normalize('NFC')
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')
-    .trim()
-    .toLowerCase();
-}
+import { accountKey } from './account-identity.js';
 
 export function createPasswordCache({ idleTtlMs, maxTtlMs, now = Date.now }) {
   const entries = new Map();
 
   const keyFor = (host, username) =>
-    `${normalizeHost(host)}\n${normalizeUsername(username)}`;
+    JSON.stringify([normalizeHost(host), accountKey(username)]);
 
   return {
     get(host, username) {

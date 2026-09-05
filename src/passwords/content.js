@@ -1,3 +1,7 @@
+import { formScope, passwordRole, generatedPasswordTargets } from './form-context.js';
+import { positivePasswordLength, passwordHints } from './password-rules.js';
+import { randomToken } from './random-token.js';
+
 (() => {
 const CONTENT_BUILD_ID = chrome.runtime.getManifest().version;
 if (globalThis.__APPLE_ALL_IN_ONE_PASSWORDS_CONTENT_BUILD__ === CONTENT_BUILD_ID) return;
@@ -85,6 +89,9 @@ let uiAuthenticated = false;
 let uiAuthTimer = null;
 let uiLoadCount = 0;
 let extensionContextInvalidated = false;
+const documentToken = randomToken();
+let pendingFill = null;
+let signupInFlight = false;
 
 function isExtensionContextError(error) {
   return /Extension context invalidated/i.test(String(error?.message ?? error ?? ''));
@@ -215,10 +222,10 @@ function isVisible(el) {
 }
 
 function isFillable(el) {
-  if (!el?.isConnected) return false;
+  if (!el?.isConnected || el.disabled || el.readOnly) return false;
   const s = getComputedStyle(el);
-  if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') return true;
-  if (el.offsetParent === null && s.position !== 'fixed') return true;
+  if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') return false;
+  if (el.offsetParent === null && s.position !== 'fixed') return false;
   const r = el.getBoundingClientRect();
   if (r.width < 4 || r.height < 4) return false;
   if (parseFloat(s.opacity || '1') < 0.1) return false;
@@ -264,10 +271,11 @@ function isLoginField(el) {
 
 function isNewPasswordField(el) {
   if (!isPasswordField(el)) return false;
+  if (passwordRole(el) === 'current') return false;
   const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
   if (ac.includes('current-password')) return false;
   if (ac.includes('new-password')) return true;
-  const visiblePws = Array.from(document.querySelectorAll('input[type="password"]')).filter(isVisible);
+  const visiblePws = Array.from(formScope(el).querySelectorAll('input[type="password"]')).filter(isVisible);
   if (visiblePws.length >= 2) return true;
   return Array.from(document.querySelectorAll('button, input[type=submit], input[type=button]')).some((b) =>
     /\b(sign[\s-]?up|register|create[\s-]?account|create[\s-]?your[\s-]?account)\b/i.test(b.textContent || b.value || ''),
@@ -322,20 +330,10 @@ function preparedPasswordForThisSite(field) {
 }
 
 function signupPasswordTarget(anchor) {
-  const roots = [];
-  if (anchor?.form) roots.push(anchor.form);
-  roots.push(document);
-  for (const root of roots) {
-    const fields = Array.from(root.querySelectorAll('input[type="password"]')).filter(isVisible);
-    const preferred = fields.find(isNewPasswordField) || fields[0];
-    if (preferred) return preferred;
-  }
-  return null;
-}
-
-function positivePasswordLength(value) {
-  const length = Number(value);
-  return Number.isInteger(length) && length > 0 && length <= 128 ? length : undefined;
+  if (!(anchor instanceof HTMLInputElement)) return null;
+  const fields = Array.from(formScope(anchor).querySelectorAll('input[type="password"]'))
+    .filter((field) => isFillable(field) && field.form === anchor.form && passwordRole(field) !== 'current');
+  return fields.find((field) => passwordRole(field) === 'new') || fields.find((field) => passwordRole(field) !== 'confirm') || null;
 }
 
 function referencedText(field, attribute) {
@@ -351,28 +349,13 @@ function passwordRuleText(field) {
     field.getAttribute('data-requirements'),
     referencedText(field, 'aria-describedby'),
   ];
-  const nearby = field.form?.innerText || field.parentElement?.innerText || '';
-  parts.push(String(nearby).slice(0, 4000));
-  return parts.filter(Boolean).join(' ').replace(/\s+/g, ' ').slice(0, 6000);
+  // Prefer field-specific descriptions. Whole-form prose often describes the
+  // username or a different password field and must not override this field.
+  const nearby = field.parentElement?.innerText || '';
+  parts.push(String(nearby).slice(0, 2000));
+  return parts.filter(Boolean).join('\n').slice(0, 4000);
 }
 
-function hintedPasswordLength(text, kind) {
-  const patterns = kind === 'min'
-    ? [
-        /(?:at least|minimum|min\.?|no fewer than)\s*(\d{1,3})\s*(?:characters?|chars?)?/i,
-        /(?:至少|最少|不得少于)\s*(\d{1,3})\s*(?:个|位)?(?:字符|字元|位)?/i,
-      ]
-    : [
-        /(?:at most|maximum|max\.?|no more than)\s*(\d{1,3})\s*(?:characters?|chars?)?/i,
-        /(?:至多|最多|不得超过)\s*(\d{1,3})\s*(?:个|位)?(?:字符|字元|位)?/i,
-      ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    const length = positivePasswordLength(match?.[1]);
-    if (length) return length;
-  }
-  return undefined;
-}
 
 function passwordRequirementsFor(anchor) {
   const field = isPasswordish(anchor) ? anchor : signupPasswordTarget(anchor);
@@ -380,22 +363,9 @@ function passwordRequirementsFor(anchor) {
   const hints = passwordRuleText(field);
   const attributeMin = positivePasswordLength(field.getAttribute('minlength'));
   const attributeMax = positivePasswordLength(field.getAttribute('maxlength'));
-  const hintedMin = hintedPasswordLength(hints, 'min');
-  const hintedMax = hintedPasswordLength(hints, 'max');
-  const pattern = String(field.getAttribute('pattern') || '').slice(0, 256);
-  const allowedSymbols = hints.match(/(?:allowed|valid|permitted|use only|可用|允许|僅限|仅限)(?:\s+(?:special\s+)?(?:characters?|symbols?|字符|符号))*[^!@#$%^&*_=+?]{0,32}([!@#$%^&*_=+?]{1,16})/i)?.[1];
-  const forbidSymbols = /(?:letters?\s+and\s+(?:numbers?|digits?)\s+only|alphanumeric\s+only|no\s+(?:special\s+)?(?:characters?|symbols?)|只能使用字母和数字|仅限字母和数字|不允许(?:特殊)?符号|不得包含(?:特殊)?符号)/i.test(hints);
-  return {
-    minLength: Math.max(attributeMin || 0, hintedMin || 0) || undefined,
-    maxLength: attributeMax || hintedMax,
-    pattern: pattern || undefined,
-    requireLower: /(?:lowercase|lower-case|small letter|小写字母|小寫字母)/i.test(hints),
-    requireUpper: /(?:uppercase|upper-case|capital letter|大写字母|大寫字母)/i.test(hints),
-    requireDigit: /(?:at least one|must (?:include|contain|have)|requires?)[^.!?]{0,40}(?:number|digit)|(?:数字|數字)/i.test(hints),
-    requireSymbol: !forbidSymbols && /(?:at least one|must (?:include|contain|have)|requires?)[^.!?]{0,40}(?:special character|symbol)|(?:特殊字符|特殊字元|符号|符號)/i.test(hints),
-    forbidSymbols,
-    allowedSymbols,
-  };
+  const hinted = passwordHints(hints);
+  const pattern = String(field.getAttribute('pattern') || '');
+  return { ...hinted, minLength: attributeMin ?? hinted.minLength, maxLength: attributeMax ?? hinted.maxLength, pattern: pattern || undefined };
 }
 
 function passwordMatchesField(password, field) {
@@ -405,12 +375,12 @@ function passwordMatchesField(password, field) {
   if (minLength && password.length < minLength) return false;
   if (maxLength && password.length > maxLength) return false;
   const pattern = String(field.getAttribute('pattern') || '');
-  if (!pattern || pattern.length > 256) return true;
-  let compiled;
-  try { compiled = new RegExp(`^(?:${pattern})$`, 'v'); } catch {
-    try { compiled = new RegExp(`^(?:${pattern})$`, 'u'); } catch { return true; }
-  }
-  return compiled.test(password);
+  if (!pattern && !field.hasAttribute('pattern')) return true;
+  // Let Chromium apply the actual HTML pattern semantics (including Unicode v).
+  // A detached clone avoids events, validation popups and altering the page.
+  const probe = field.cloneNode(false);
+  probe.value = password;
+  return !probe.validity.patternMismatch;
 }
 
 function isAllowlistedLoginHost(host) {
@@ -456,14 +426,10 @@ function liveField(field) {
 }
 
 function fillCredentials(username, password, anchor) {
-  anchor = liveField(anchor);
-  const pool = new Set(document.querySelectorAll('input'));
-  const root = anchor?.getRootNode?.();
-  if (root && root !== document && root.querySelectorAll) {
-    for (const i of root.querySelectorAll('input')) pool.add(i);
-  }
-  const inputs = Array.from(pool).filter(isFillable);
-  let passwords = inputs.filter(isPasswordField);
+  if (!(anchor instanceof HTMLInputElement) || !isFillable(anchor)) return false;
+  const inputs = Array.from(formScope(anchor).querySelectorAll('input'))
+    .filter((field) => isFillable(field) && field.form === anchor.form);
+  let passwords = inputs.filter((field) => isPasswordField(field) && !['new', 'confirm'].includes(passwordRole(field)));
   let usernames = inputs.filter(isUsernameField);
   const anchorForm = anchor?.form;
   if (anchorForm) {
@@ -501,14 +467,9 @@ function fillCredentials(username, password, anchor) {
 }
 
 function fillGeneratedPassword(field, password) {
-  field = liveField(field);
   if (!(field instanceof HTMLInputElement) || !password) return false;
-  const targets = new Set([field]);
-  for (const p of Array.from(document.querySelectorAll('input[type="password"]')).filter(isFillable)) {
-    if (p === field || p.value) continue;
-    if (p.form && field.form && p.form !== field.form) continue;
-    targets.add(p);
-  }
+  const targets = generatedPasswordTargets(field, isFillable);
+  if (!targets.length || !targets.every((target) => passwordMatchesField(password, target))) return false;
   for (const t of targets) {
     setValue(t, password);
     everPassword.add(t);
@@ -554,22 +515,42 @@ function firstVisibleOtpField() {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (!['fill', 'fillOtp'].includes(msg?.type)) return false;
+  if (msg?.type === 'hme:list-changed' && sender.id === chrome.runtime.id) {
+    if (uiAnchor && uiState && !signupInFlight) refreshExistingHme(uiAnchor, ++aliasLookupSeq).catch(() => {});
+    return false;
+  }
+  if (!['prepareFill', 'fill', 'fillOtp'].includes(msg?.type)) return false;
   if (sender.id !== chrome.runtime.id) {
     sendResponse({ ok: false, filled: false, error: 'forbidden' });
     return true;
   }
-  if (msg.expectedHost && location.hostname.toLowerCase() !== msg.expectedHost) {
+  if ((msg.expectedOrigin && location.origin !== msg.expectedOrigin) || (msg.expectedHref && location.href !== msg.expectedHref) || (msg.expectedHost && location.hostname.toLowerCase() !== msg.expectedHost)) {
     sendResponse({ ok: false, filled: false, error: 'origin mismatch' });
     return true;
   }
+  if (msg.type === 'prepareFill') {
+    const active = deepActiveElement();
+    const anchor = uiAnchor || (active instanceof HTMLInputElement && isFillable(active) ? active : null) ||
+      (fillAnchor?.isConnected && isFillable(fillAnchor) ? fillAnchor : null) || firstVisibleOtpField() ||
+      Array.from(document.querySelectorAll('input')).find((field) => isFillable(field) && (isUsernameField(field) || isPasswordField(field))) || null;
+    pendingFill = { token: randomToken(), anchor, value: anchor?.value, href: location.href, at: Date.now() };
+    sendResponse({ ok: true, documentToken, targetToken: pendingFill.token });
+    return true;
+  }
+  const target = pendingFill;
+  if (msg.expectedDocumentToken !== documentToken || !target || msg.targetToken !== target.token ||
+      target.href !== location.href || Date.now() - target.at > 90_000 || (target.anchor && (!isFillable(target.anchor) || target.anchor.value !== target.value))) {
+    sendResponse({ ok: false, filled: false, reason: 'target_changed', error: 'The original sign-in field is no longer available.' });
+    return true;
+  }
+  pendingFill = null;
   if (msg.type === 'fillOtp') {
-    const anchor = fillAnchor && isOtpField(liveField(fillAnchor)) ? liveField(fillAnchor) : firstVisibleOtpField();
+    const anchor = target.anchor && isOtpField(target.anchor) ? target.anchor : null;
     const filled = fillOneTimeCode(msg.code, anchor);
     sendResponse({ ok: true, filled, reason: filled ? undefined : 'no_otp_field' });
     return true;
   }
-  const filled = fillCredentials(msg.username, msg.password, fillAnchor);
+  const filled = !!target.anchor && fillCredentials(msg.username, msg.password, target.anchor);
   if (filled) lastAutofill = { host: location.hostname, username: msg.username, password: msg.password, at: Date.now() };
   sendResponse({ ok: true, filled, reason: filled ? undefined : 'no_login_field' });
   return true;
@@ -682,6 +663,7 @@ function positionUi(height = uiExpectedRect?.height || UI_DEFAULT_HEIGHT) {
 }
 
 function closeUi() {
+  pendingFill = null;
   aliasLookupSeq += 1;
   if (uiAuthTimer) clearTimeout(uiAuthTimer);
   uiAuthTimer = null;
@@ -866,27 +848,53 @@ async function handleUiAction(msg) {
 
   if (msg.type === 'smart-signup') {
     if (!isHideEmailField(uiAnchor) || typeof msg.password !== 'string' || msg.password.length < 8) return;
+    if (signupInFlight) {
+      postUi({ type: 'error', message: L('A private signup request is already running.', '私密注册请求仍在处理中，请稍候。') });
+      return;
+    }
+    const anchor = uiAnchor;
+    const anchorValue = anchor.value;
+    const actionPort = uiPort;
+    const pageUrl = location.href;
     const passwordField = signupPasswordTarget(uiAnchor);
-    if (passwordField && !passwordMatchesField(msg.password, passwordField)) {
+    if (passwordField && !generatedPasswordTargets(passwordField, isFillable).every((field) => passwordMatchesField(msg.password, field))) {
       postUi({ type: 'error', message: L('The page rejected this password under its declared rules. Reopen the chooser to generate another compatible password.', '此密码不符合网页声明的规则，请重新打开选择器生成另一条兼容密码。') });
       return;
     }
-    let alias = typeof msg.hme === 'string' && msg.hme.includes('@') ? msg.hme : '';
-    if (!alias) {
-      const result = await sendRuntimeMessage({ type: 'hme:create-for-site' }).catch((e) => ({ ok: false, error: String(e) }));
+    signupInFlight = true;
+    let created = false;
+    try {
+      let alias = typeof msg.hme === 'string' && msg.hme.includes('@') ? msg.hme : '';
+      const result = await sendRuntimeMessage({ type: 'hme:create-for-site', ...(alias ? { existingHme: alias } : {}) }).catch((e) => ({ ok: false, error: String(e) }));
       if (!result?.ok || !result.hme) {
-        postUi({ type: 'error', message: result?.error || L('Could not create a private signup address.', '无法创建私密注册地址。') });
+        if (actionPort === uiPort) postUi({ type: 'error', message: result?.error || L('Could not create a private signup address.', '无法创建私密注册地址。') });
         return;
       }
       alias = String(result.hme);
+      created = !result.reused;
+      if (actionPort !== uiPort || anchor !== uiAnchor || location.href !== pageUrl || !isFillable(anchor) || anchor.value !== anchorValue ||
+          (passwordField && (!isFillable(passwordField) || !passwordMatchesField(msg.password, passwordField)))) {
+        if (created) await sendRuntimeMessage({ type: 'hme:created-unfilled' }).catch(() => {});
+        if (actionPort === uiPort) postUi({ type: 'error', message: L('The original form changed. Find the created address in My Addresses to copy it.', '原表单已变化。已创建的地址可在“我的地址”中查看并复制。') });
+        return;
+      }
+      if (passwordField && !fillGeneratedPassword(passwordField, msg.password)) {
+        if (created) await sendRuntimeMessage({ type: 'hme:created-unfilled' }).catch(() => {});
+        postUi({ type: 'error', message: L('The password fields changed. Review their rules and try again.', '密码输入框已变化，请检查要求后重试。') });
+        return;
+      }
+      if (!isFillable(anchor) || location.href !== pageUrl || anchor.value !== anchorValue) {
+        if (created) await sendRuntimeMessage({ type: 'hme:created-unfilled' }).catch(() => {});
+        return;
+      }
+      setValue(anchor, alias);
+      if (!passwordField) lastGenerated = { host: location.hostname, password: msg.password, at: Date.now(), pending: true };
+      anchor.focus();
+      closeUi();
+    } finally {
+      signupInFlight = false;
+      if (actionPort === uiPort) postUi({ type: 'operation-finished' });
     }
-
-    const anchor = uiAnchor;
-    setValue(anchor, alias);
-    if (passwordField) fillGeneratedPassword(passwordField, msg.password);
-    else lastGenerated = { host: location.hostname, password: msg.password, at: Date.now(), pending: true };
-    anchor.focus();
-    closeUi();
     return;
   }
 
@@ -973,7 +981,10 @@ window.addEventListener('message', (event) => {
   if (event.data?.type !== 'openpasswords-inline-ready' || uiPort) return;
   const channel = new MessageChannel();
   uiPort = channel.port1;
-  uiPort.onmessage = (e) => handleUiAction(e.data);
+  uiPort.onmessage = (e) => handleUiAction(e.data).catch((error) => {
+    postUi({ type: 'error', message: L('The operation could not be completed. Please try again.', '操作未完成，请重试。') });
+    if (isExtensionContextError(error)) stopInvalidatedContentScript();
+  });
   uiPort.start?.();
   uiFrame.contentWindow.postMessage({ type: 'openpasswords-port', secret: uiSecret }, EXT_ORIGIN, [channel.port2]);
   uiAuthenticated = true;

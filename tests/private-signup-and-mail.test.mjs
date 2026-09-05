@@ -75,18 +75,8 @@ test('recent Hide My Email messages are user-triggered and not persisted', () =>
   assert.doesNotMatch(popup, /setBrowserStorageValue\('recentMail'/);
 });
 
-test('Hide My Email address lists survive tab switches and popup reopens without refetching', () => {
-  const popup = readProjectFile('src/pages/Popup/Popup.tsx');
-
-  assert.match(popup, /HME_LIST_CACHE_TTL/);
-  assert.match(popup, /const hmeListCache = new Map/);
-  assert.match(popup, /browser\.storage\.session\.get/);
-  assert.match(popup, /browser\.storage\.session\.set/);
-  assert.match(popup, /cacheIsFresh[\s\S]*if \(cacheIsFresh\) return/);
-  assert.match(popup, /const hmeClient = useMemo/);
-  assert.match(popup, /invalidateHmeListSnapshot/);
-  assert.match(popup, /onCreated=\{\(\) => \{[\s\S]*setRefreshKey/);
-});
+// Cache/reopen/mutation behavior is exercised through the real repository in
+// reliability-regressions.test.mjs, not by matching the old popup cache source.
 
 test('Hide My Email authorization failures clear stale popup sessions before surfacing', async () => {
   for (const status of [401, 403, 429]) {

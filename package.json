@@ -1,6 +1,6 @@
 {
   "name": "apple-all-in-one",
-  "version": "1.2.20",
+  "version": "1.2.22",
   "description": "Apple Passwords, passkeys, verification codes, and iCloud Hide My Email in one Chromium extension.",
   "license": "Apache-2.0 AND MIT",
   "scripts": {
@@ -10,7 +10,7 @@
     "build:firefox": "FIREFOX=true node utils/build.js",
     "pretest": "npm run build",
     "test": "node --test tests/*.test.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.passwords.json",
     "prettier": "prettier --write '**/*.{js,jsx,ts,tsx,json,css,md}'",
     "prettier:check": "prettier --check '**/*.{js,jsx,ts,tsx,json,css,md}'",
     "watch": "node utils/watch.js"

@@ -3,6 +3,7 @@ import BrandIcon from '../../components/BrandIcon';
 import Symbol, { SymbolName } from '../../components/Symbol';
 import { tr } from '../../i18n';
 import './Userguide.css';
+import '../../styles/apple-design.css';
 
 const SetupStep = ({ number, title, children }: { number: number; title: string; children: React.ReactNode }) => (
   <div className="guide-row">

@@ -64,11 +64,9 @@ export function loginExactlyMatchesHost(host, login) {
 }
 
 export function orderLoginsForHost(host, logins, recentUsernames = []) {
-  const recent = recentUsernames.map((username) =>
-    (username || '').toLowerCase()
-  );
+  const recent = recentUsernames;
   const mruRank = (login) => {
-    const index = recent.indexOf((login?.username || '').toLowerCase());
+    const index = recent.indexOf(login?.username || '');
     return index === -1 ? Infinity : index;
   };
 

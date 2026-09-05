@@ -31,6 +31,7 @@ const closeBtn = document.getElementById('close');
 let port = null;
 let currentState = null;
 let pinMode = false;
+let passwordOverrides = {};
 
 function applyStaticLocale() {
   document.documentElement.lang = resolveLanguage();
@@ -38,6 +39,7 @@ function applyStaticLocale() {
   if (eyebrow) eyebrow.textContent = L('PASSWORDS & PRIVACY', '密码与隐私');
   if (!currentState && hostLabel) hostLabel.textContent = L('This Website', '此网站');
   closeBtn?.setAttribute('aria-label', L('Close', '关闭'));
+  if (closeBtn) closeBtn.innerHTML = symbolSvg('close');
 }
 applyStaticLocale();
 
@@ -45,13 +47,15 @@ function safeHost(host) {
   return String(host || L('Passwords', '密码')).slice(0, 160);
 }
 
-function svgKey() {
-  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.6 4.1a5 5 0 1 0-3.7 8.3l1.2 1.2v2h2v2h2v2.3h3.2v-3l-6.2-6.2a5 5 0 0 0 1.5-6.6ZM7.5 9.2a1.7 1.7 0 1 1 0-3.4 1.7 1.7 0 0 1 0 3.4Z"/></svg>';
+// Only the packaged, fixed path catalog is interpolated, never page/account data.
+function symbolSvg(name, chevron = false) {
+  const paths = globalThis.AppleAllInOneSymbols?.[name] || [];
+  return `<svg class="apple-symbol${chevron ? ' chevron' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths.map((d) => `<path d="${d}"/>`).join('')}</svg>`;
 }
 
-function svgMail() {
-  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5h13A3.5 3.5 0 0 1 22 8.5v7A3.5 3.5 0 0 1 18.5 19h-13A3.5 3.5 0 0 1 2 15.5v-7A3.5 3.5 0 0 1 5.5 5Zm-.8 3.1 6.1 4.7a2 2 0 0 0 2.4 0l6.1-4.7a1.2 1.2 0 0 0-.8-.3h-13c-.3 0-.6.1-.8.3Z"/></svg>';
-}
+function svgKey() { return symbolSvg('key'); }
+
+function svgMail() { return symbolSvg('mail'); }
 
 function makeAppleSignInRow() {
   const button = document.createElement('button');
@@ -121,6 +125,14 @@ function makeSmartSignupRow(state) {
   return button;
 }
 
+function finishSignupOperation() {
+  const button = content.querySelector('.smart-signup-row');
+  if (!button) return;
+  button.disabled = false;
+  const action = button.querySelector('.row-action');
+  if (action) action.textContent = L('Use', '使用');
+}
+
 function appendSmartSignup(state) {
   if (!state.hasAppleSignIn && !state.canSmartSignup) return false;
   const label = document.createElement('div');
@@ -128,12 +140,15 @@ function appendSmartSignup(state) {
   label.textContent = L('Smart Signup', '智能注册');
   content.appendChild(label);
   if (state.hasAppleSignIn) content.appendChild(makeAppleSignInRow());
-  if (state.canSmartSignup) content.appendChild(makeSmartSignupRow(state));
+  if (state.canSmartSignup) {
+    content.appendChild(makeSmartSignupRow(state));
+    appendPasswordControls(state.passwordRequirements || {});
+  }
   return true;
 }
 
 function svgChevron() {
-  return '<svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>';
+  return symbolSvg('chevron-right', true);
 }
 
 function clearStatus() {
@@ -174,7 +189,41 @@ function reportHeight() {
 function generateCompatiblePassword(requirements = {}, allowSymbols = true) {
   const generator = globalThis.AppleAllInOnePasswordGenerator;
   if (!generator?.generateCompatiblePassword) return { password: '', compatible: false };
-  return generator.generateCompatiblePassword(requirements, { allowSymbols });
+  return generator.generateCompatiblePassword(requirements, { ...passwordOverrides, allowSymbols });
+}
+
+function appendPasswordControls(requirements) {
+  const details = document.createElement('details');
+  details.className = 'password-controls';
+  const summary = document.createElement('summary');
+  summary.textContent = L('Adjust password', '调整密码');
+  const lengthLabel = document.createElement('label');
+  lengthLabel.textContent = L('Length', '长度');
+  const length = document.createElement('input');
+  length.type = 'number'; length.min = '8'; length.max = '128';
+  length.value = String(passwordOverrides.length || Math.min(requirements.maxLength || 128, Math.max(20, requirements.minLength || 8)));
+  const symbolsLabel = document.createElement('label');
+  symbolsLabel.textContent = L('Allowed symbols (empty = none)', '可用符号（留空为无符号）');
+  const symbols = document.createElement('input');
+  symbols.type = 'text'; symbols.maxLength = 32;
+  symbols.value = passwordOverrides.allowedSymbols ?? requirements.allowedSymbols ?? '!@#$%^&*_=+?';
+  const apply = document.createElement('button');
+  apply.type = 'button'; apply.textContent = L('Apply', '应用');
+  apply.addEventListener('click', (event) => {
+    if (!event.isTrusted) return;
+    const next = { length: Number(length.value), allowedSymbols: symbols.value };
+    const result = globalThis.AppleAllInOnePasswordGenerator?.generateCompatiblePassword(requirements, next);
+    if (!result?.compatible) {
+      showStatus(L('These settings cannot satisfy the website’s rules. Try another length/symbol set; unsupported patterns require manual entry.', '这些设置无法满足网站规则。请调整长度或符号；暂不支持的规则需要手动输入。'));
+      return;
+    }
+    passwordOverrides = next;
+    renderState(currentState);
+  });
+  lengthLabel.appendChild(length); symbolsLabel.appendChild(symbols);
+  details.append(summary, lengthLabel, symbolsLabel, apply);
+  content.appendChild(details);
+  details.addEventListener('toggle', reportHeight);
 }
 
 function makeLoginRow(login) {
@@ -203,9 +252,7 @@ function makeLoginRow(login) {
   return button;
 }
 
-function svgCode() {
-  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h10A3.5 3.5 0 0 1 20.5 7v10a3.5 3.5 0 0 1-3.5 3.5H7A3.5 3.5 0 0 1 3.5 17V7A3.5 3.5 0 0 1 7 3.5Zm1.2 6.2a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Zm3.8 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Zm3.8 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Z"/></svg>';
-}
+function svgCode() { return symbolSvg('code'); }
 
 function makeOtpRow(item) {
   const button = document.createElement('button');
@@ -239,7 +286,7 @@ function makeGeneratorRow(label, password) {
   button.type = 'button';
   const icon = document.createElement('span');
   icon.className = 'row-icon';
-  icon.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8 14.2 8l5.5.5-4.2 3.6 1.3 5.4-4.8-2.8-4.8 2.8 1.3-5.4-4.2-3.6L9.8 8 12 2.8Z"/></svg>';
+  icon.innerHTML = symbolSvg('sparkles');
   const main = document.createElement('span');
   main.className = 'row-main';
   const title = document.createElement('div');
@@ -353,10 +400,12 @@ function appendGenerators(pendingPassword = '', requirements = {}) {
     empty.textContent = L('This website’s declared password rules could not be satisfied safely.', '无法安全满足此网站声明的密码规则。');
     content.appendChild(empty);
   }
+  appendPasswordControls(requirements);
 }
 
 function renderState(state) {
   currentState = state;
+  applyStaticLocale();
   pinMode = false;
   clearStatus();
   hostLabel.textContent = safeHost(state.host);
@@ -431,7 +480,8 @@ window.addEventListener('message', (event) => {
   port.onmessage = (e) => {
     const msg = e.data || {};
     if (msg.type === 'state') renderState(msg);
-    else if (msg.type === 'error') showStatus(msg.message);
+    else if (msg.type === 'error') { finishSignupOperation(); showStatus(msg.message); }
+    else if (msg.type === 'operation-finished') finishSignupOperation();
     else if (msg.type === 'pin-ready') {
       pinMode = true;
       clearStatus();

@@ -9,10 +9,12 @@ import {
 } from '../../storage';
 import ICloudClient, {
   type HmeEmail,
-  PremiumMailSettings,
   DEFAULT_SETUP_URL,
   CN_SETUP_URL,
+  classifyICloudFailure,
+  UnsuccessfulRequestError,
 } from '../../iCloudClient';
+import { HmeRepository, HME_LIST_SESSION_CACHE_KEY, hmeListCacheKey, type HmeListSnapshot, type HmeOperation } from '../../hmeRepository';
 import {
   ActiveInputElementWriteData,
   ActiveInputElementWriteResponse,
@@ -33,6 +35,45 @@ import {
 import { initializeI18n, tr } from '../../i18n';
 
 const i18nReady = initializeI18n();
+const hmeRepository = new HmeRepository({
+  read: async (key) => {
+    const stored = await browser.storage.session.get(HME_LIST_SESSION_CACHE_KEY).catch(() => ({}));
+    const record = (stored as Record<string, { key: string; snapshot: HmeListSnapshot }>)[HME_LIST_SESSION_CACHE_KEY];
+    return record?.key === key ? record.snapshot : undefined;
+  },
+  write: async (key, snapshot) => {
+    if (snapshot) await browser.storage.session.set({ [HME_LIST_SESSION_CACHE_KEY]: { key, snapshot } });
+    else {
+      const stored = await browser.storage.session.get(HME_LIST_SESSION_CACHE_KEY);
+      if ((stored[HME_LIST_SESSION_CACHE_KEY] as { key?: string } | undefined)?.key === key) await browser.storage.session.remove(HME_LIST_SESSION_CACHE_KEY);
+    }
+  },
+  changed: (key) => {
+    browser.runtime.sendMessage({ type: 'hme:list-changed', key }).catch(() => {});
+    // runtime.sendMessage does not deliver to content scripts. Notify existing
+    // choosers without injecting scripts or disclosing any address data.
+    browser.tabs.query({}).then((tabs) => Promise.all(tabs.filter((tab) => tab.id !== undefined).map((tab) =>
+      browser.tabs.sendMessage(tab.id!, { type: 'hme:list-changed' }).catch(() => {})
+    ))).catch(() => {});
+  },
+});
+
+const hmeErrorCopy = (error: unknown) => {
+  switch (classifyICloudFailure(error)) {
+    case 'expired': return tr('Your iCloud session expired. Sign in to iCloud.com again.', '你的 iCloud 会话已过期，请重新登录 iCloud.com。');
+    case 'rate_limited': return tr('iCloud is rate limiting requests. Wait a moment before retrying; your session is retained.', 'iCloud 暂时限制了请求频率，请稍后重试；登录状态已保留。');
+    case 'offline': return tr('iCloud could not be reached. Check your connection and retry; your session is retained.', '暂时无法连接 iCloud，请检查网络后重试；登录状态已保留。');
+    default: return tr('iCloud could not complete this request. Please retry later.', 'iCloud 暂时无法完成请求，请稍后重试。');
+  }
+};
+
+const runHme = async (client: ICloudClient, operation: HmeOperation, args: unknown[] = []) => {
+  const current = await getBrowserStorageValue('clientState');
+  if (!current || hmeListCacheKey(current) !== hmeListCacheKey(client)) {
+    throw new UnsuccessfulRequestError('iCloud session changed', 401, 'POST', 'iCloud');
+  }
+  return hmeRepository.execute(client, operation, args);
+};
 
 // v1.2.2 briefly used a differently named experimental preference. Migrate the
 // boolean locally without contacting Apple or iCloud, then remove the obsolete key.
@@ -66,14 +107,19 @@ const constructClient = async (): Promise<ICloudClient> => {
     console.debug('constructClient: Using default setupUrl');
     return new ICloudClient(DEFAULT_SETUP_URL);
   }
-  return new ICloudClient(clientState.setupUrl, clientState.webservices, clientState.dsid);
+  return new ICloudClient(clientState.setupUrl, clientState.webservices, clientState.dsid, () => performDeauthSideEffects(clientState));
 };
 
-const performDeauthSideEffects = () => {
-  setBrowserStorageValue('popupState', DEFAULT_STORE.popupState);
-  setBrowserStorageValue('clientState', DEFAULT_STORE.clientState);
-  setBrowserStorageValue('mailActivityCache', DEFAULT_STORE.mailActivityCache);
-  browser.contextMenus
+const performDeauthSideEffects = async (expected?: Store['clientState']) => {
+  const current = await getBrowserStorageValue('clientState');
+  if (expected && current && JSON.stringify(current) !== JSON.stringify(expected)) return;
+  if (current) await hmeRepository.invalidate(hmeListCacheKey(current)).catch(console.debug);
+  await Promise.all([
+    setBrowserStorageValue('popupState', DEFAULT_STORE.popupState),
+    setBrowserStorageValue('clientState', DEFAULT_STORE.clientState),
+    setBrowserStorageValue('mailActivityCache', DEFAULT_STORE.mailActivityCache),
+  ]);
+  await browser.contextMenus
     .update(CONTEXT_MENU_ITEM_ID, {
       title: signedOutCtaCopy(),
       // Keep the command clickable so an explicit right-click can re-discover an existing
@@ -83,12 +129,12 @@ const performDeauthSideEffects = () => {
     .catch(console.debug);
 };
 
-const performAuthSideEffects = (
+const performAuthSideEffects = async (
   client: ICloudClient,
   options: { notification?: boolean } = {}
 ) => {
   const { notification = false } = options;
-  setBrowserStorageValue('clientState', {
+  await setBrowserStorageValue('clientState', {
     setupUrl: client.setupUrl,
     webservices: client.webservices,
     dsid: client.dsid,
@@ -207,27 +253,32 @@ const resolveTrustedICloudClient = async (): Promise<ICloudClient | undefined> =
     if (!setupUrls.includes(setupUrl)) setupUrls.push(setupUrl);
   }
 
+  const failures: unknown[] = [];
   const attempts = await Promise.all(
     setupUrls.map(async (setupUrl) => {
       const candidate = new ICloudClient(setupUrl);
       try {
         await candidate.validateToken();
         return candidate.webservices?.premiummailsettings?.url ? candidate : undefined;
-      } catch {
+      } catch (error) {
+        failures.push(error);
         return undefined;
       }
     })
   );
 
   const client = attempts.find((candidate): candidate is ICloudClient => candidate !== undefined);
-  if (client) performAuthSideEffects(client);
-  return client;
+  if (!client) {
+    const transient = failures.find((error) => classifyICloudFailure(error) !== 'expired');
+    if (transient) throw transient;
+  }
+  if (client) {
+    await performAuthSideEffects(client);
+    const expected = { setupUrl: client.setupUrl, webservices: client.webservices, dsid: client.dsid };
+    return new ICloudClient(client.setupUrl, client.webservices, client.dsid, () => performDeauthSideEffects(expected));
+  }
+  return undefined;
 };
-
-const INLINE_ALIAS_CACHE_TTL = 60 * 1000;
-let inlineAliasCache:
-  | { sessionKey: string; expiresAt: number; emails: HmeEmail[] }
-  | undefined;
 
 const candidateHostname = (value: string | undefined): string | undefined => {
   const raw = value?.trim();
@@ -242,25 +293,13 @@ const candidateHostname = (value: string | undefined): string | undefined => {
 };
 
 const aliasesForClient = async (clientState: NonNullable<Store['clientState']>) => {
-  const sessionKey = `${clientState.setupUrl}:${clientState.dsid || ''}`;
-  if (
-    inlineAliasCache?.sessionKey === sessionKey &&
-    inlineAliasCache.expiresAt > Date.now()
-  ) {
-    return inlineAliasCache.emails;
-  }
-
   const client = new ICloudClient(
     clientState.setupUrl,
     clientState.webservices,
-    clientState.dsid
+    clientState.dsid,
+    () => performDeauthSideEffects(clientState)
   );
-  const result = await new PremiumMailSettings(client).listHme();
-  inlineAliasCache = {
-    sessionKey,
-    expiresAt: Date.now() + INLINE_ALIAS_CACHE_TTL,
-    emails: result.hmeEmails,
-  };
+  const result = await runHme(client, 'list') as { hmeEmails: HmeEmail[] };
   return result.hmeEmails;
 };
 
@@ -286,10 +325,27 @@ const findExistingAliasForHost = (emails: HmeEmail[], host: string): HmeEmail | 
 // an async onMessage listener that resolves undefined can still race another listener's
 // response channel in Chromium.
 browser.runtime.onMessage.addListener((uncastedMessage: unknown, sender: browser.Runtime.MessageSender) => {
-  const message = uncastedMessage as { type?: string; wantAlias?: boolean };
-  if (typeof message?.type !== 'string' || !message.type.startsWith('hme:')) return undefined;
+  const message = uncastedMessage as { type?: string; wantAlias?: boolean; existingHme?: string; key?: string; operation?: HmeOperation; args?: unknown[] };
+  if (!['hme:inline-state', 'hme:create-for-site', 'hme:created-unfilled', 'hme:manager'].includes(message?.type || '')) return undefined;
 
   return (async () => {
+    if (sender.id !== browser.runtime.id) return { ok: false, error: 'forbidden' };
+    if (message.type === 'hme:manager') {
+      if (!['popup.html', 'options.html'].some((page) => sender.url?.split(/[?#]/)[0] === browser.runtime.getURL(page))) return { ok: false, error: 'forbidden' };
+      const state = await getBrowserStorageValue('clientState');
+      if (!state || hmeListCacheKey(state) !== message.key) return { ok: false, error: tr('The iCloud session changed. Reopen Hide My Email.', 'iCloud 会话已变化，请重新打开隐藏邮件地址页面。') };
+      const client = new ICloudClient(state.setupUrl, state.webservices, state.dsid, () => performDeauthSideEffects(state));
+      try {
+        const result = await runHme(client, message.operation as HmeOperation, Array.isArray(message.args) ? message.args : []);
+        return { ok: true, result };
+      } catch (error) {
+        return { ok: false, error: hmeErrorCopy(error), status: error instanceof UnsuccessfulRequestError ? error.status : undefined, retryAfterMs: error instanceof UnsuccessfulRequestError ? error.retryAfterMs : undefined };
+      }
+    }
+    if (message.type === 'hme:created-unfilled') {
+      await createContextNotification(tr('The address was created, but the original form changed. Open My Addresses to copy it.', '地址已创建，但原表单已变化。请打开“我的地址”查看并复制。'));
+      return { ok: true };
+    }
     if (message.type === 'hme:inline-state') {
       const [clientState, options] = await Promise.all([
         getBrowserStorageValue('clientState'),
@@ -311,7 +367,7 @@ browser.runtime.onMessage.addListener((uncastedMessage: unknown, sender: browser
             };
           }
         } catch (error) {
-          console.debug('Could not match a Hide My Email address to this website', error);
+          return { ok: false, ready: false, error: hmeErrorCopy(error) };
         }
       }
       return {
@@ -323,25 +379,28 @@ browser.runtime.onMessage.addListener((uncastedMessage: unknown, sender: browser
 
     const clientState = await getBrowserStorageValue('clientState');
     if (!clientState) return { ok: false, error: tr('Sign in to iCloud.com to use Hide My Email.', '请登录 iCloud.com 以使用隐藏邮件地址。') };
-    const client = new ICloudClient(clientState.setupUrl, clientState.webservices, clientState.dsid);
+    const client = new ICloudClient(clientState.setupUrl, clientState.webservices, clientState.dsid, () => performDeauthSideEffects(clientState));
 
     if (message.type === 'hme:create-for-site') {
       try {
-        if (!(await client.isAuthenticated())) {
-          performDeauthSideEffects();
-          return { ok: false, error: tr('Your iCloud session expired. Sign in to iCloud.com again.', '你的 iCloud 会话已过期，请重新登录 iCloud.com。') };
+        if (message.existingHme) {
+          const emails = await aliasesForClient(clientState);
+          const host = sender.url ? new URL(sender.url).hostname : '';
+          const existing = findExistingAliasForHost(emails.filter((email) => email.hme === message.existingHme), host);
+          if (!existing) return { ok: false, error: tr('This address is no longer active or associated with this website. Reopen the chooser.', '此地址已停用或不再匹配此网站，请重新打开选择器。') };
+          return { ok: true, hme: existing.hme, reused: true };
         }
+        // The HME endpoint itself authenticates this action. A separate validate
+        // POST adds latency and bypasses the repository's rate-limit cooldown.
         let label = tr('Private Signup', '私密注册');
         try {
           if (sender.url) label = new URL(sender.url).hostname || label;
         } catch {}
-        const settings = new PremiumMailSettings(client);
-        const generated = await settings.generateHme();
-        const result = await settings.reserveHme(generated, label, 'Private signup through Apple All-In-One');
-        inlineAliasCache = undefined;
+        const generated = await runHme(client, 'generate');
+        const result = await runHme(client, 'reserve', [generated, label, 'Private signup through Apple All-In-One']) as HmeEmail;
         return { ok: true, hme: result.hme };
       } catch (error) {
-        return { ok: false, error: String(error) };
+        return { ok: false, error: hmeErrorCopy(error) };
       }
     }
 
@@ -362,7 +421,7 @@ browser.runtime.onMessage.addListener((uncastedMessage: unknown) => {
             error: signedOutCtaCopy(),
             elementId,
           });
-          performDeauthSideEffects();
+          await performDeauthSideEffects();
         };
 
         const clientState = await getBrowserStorageValue('clientState');
@@ -374,20 +433,15 @@ browser.runtime.onMessage.addListener((uncastedMessage: unknown) => {
         const client = new ICloudClient(
           clientState.setupUrl,
           clientState.webservices,
-          clientState.dsid
+          clientState.dsid,
+          () => performDeauthSideEffects(clientState)
         );
-        if (!(await client.isAuthenticated())) {
-          await deauthCallback();
-          break;
-        }
-
         try {
-          const pms = new PremiumMailSettings(client);
-          const hme = await pms.generateHme();
+          const hme = await runHme(client, 'generate');
           await sendMessageToTab(MessageType.GenerateResponse, { hme, elementId });
         } catch (e) {
           await sendMessageToTab(MessageType.GenerateResponse, {
-            error: String(e),
+            error: hmeErrorCopy(e),
             elementId,
           });
         }
@@ -398,8 +452,7 @@ browser.runtime.onMessage.addListener((uncastedMessage: unknown) => {
         const { hme, label, elementId } = message.data as ReservationRequestData;
         const client = await constructClient();
         try {
-          const pms = new PremiumMailSettings(client);
-          await pms.reserveHme(hme, label);
+          await runHme(client, 'reserve', [hme, label]);
           await sendMessageToTab(MessageType.ReservationResponse, {
             hme,
             elementId,
@@ -526,7 +579,11 @@ browser.storage.onChanged.addListener((changes: Record<string, browser.Storage.S
 // context-menu title in sync instead of leaving the install-time "Sign in" label around.
 browser.storage.onChanged.addListener((changes, namespace) => {
   if (namespace !== 'local' || !changes.clientState) return;
+  const oldState = changes.clientState.oldValue as Store['clientState'];
   const clientState = changes.clientState.newValue as Store['clientState'] | undefined;
+  if (oldState && (!clientState || hmeListCacheKey(oldState) !== hmeListCacheKey(clientState))) {
+    hmeRepository.invalidate(hmeListCacheKey(oldState)).catch(console.debug);
+  }
   browser.contextMenus
     .update(CONTEXT_MENU_ITEM_ID, {
       title: clientState ? signedInCtaCopy() : signedOutCtaCopy(),
@@ -565,14 +622,13 @@ const runContextMenuAction = async (
 
   if (!client) {
     await sendContextFeedback(tab, frameId, 'error', signedOutCtaCopy());
-    performDeauthSideEffects();
+    await performDeauthSideEffects();
     return;
   }
 
   try {
-    const pms = new PremiumMailSettings(client);
-    const hme = await pms.generateHme();
-    await pms.reserveHme(hme, hostname || tr('Private Address', '隐藏邮件地址'));
+    const hme = await runHme(client, 'generate') as string;
+    await runHme(client, 'reserve', [hme, hostname || tr('Private Address', '隐藏邮件地址')]);
 
     const result = await sendContextMessage(tab, frameId, {
       text: hme,
@@ -625,9 +681,9 @@ browser.webRequest.onResponseStarted.addListener(
 
     const setupUrl = url.split('/accountLogin')[0] as ICloudClient['setupUrl'];
     const client = new ICloudClient(setupUrl);
-    if (await client.isAuthenticated()) {
-      performAuthSideEffects(client, { notification: true });
-    }
+    try {
+      if (await client.isAuthenticated()) await performAuthSideEffects(client, { notification: true });
+    } catch (error) { console.debug('iCloud login validation is temporarily unavailable', classifyICloudFailure(error)); }
   },
   {
     urls: [
@@ -646,7 +702,7 @@ browser.webRequest.onResponseStarted.addListener(
       console.debug('Request failed', details);
       return;
     }
-    performDeauthSideEffects();
+    await performDeauthSideEffects();
   },
   {
     urls: [`${DEFAULT_SETUP_URL}/logout*`, `${CN_SETUP_URL}/logout*`],

@@ -96,6 +96,9 @@
         "src/inline.html",
         "src/password-generator.js",
         "src/inline.css",
+        "src/apple-design.css",
+        "src/brand-icon.svg",
+        "src/symbols.js",
         "src/inline.js"
       ],
       "matches": [
@@ -103,6 +106,6 @@
       ]
     }
   ],
-  "version": "1.2.20",
+  "version": "1.2.22",
   "default_locale": "en"
 }

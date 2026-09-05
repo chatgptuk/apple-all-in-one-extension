@@ -11,7 +11,7 @@ An independent, open-source Chromium extension that brings Apple Passwords, pass
 
 This project is not endorsed by, sponsored by, authorized by, or affiliated with Apple Inc. Apple, iCloud, iCloud+, Apple Passwords, and related names are Apple trademarks used here only to describe compatibility and the services being accessed.
 
-**Current version:** 1.2.20<br>
+**Current version:** 1.2.21<br>
 **Repository:** https://github.com/chatgptuk/apple-all-in-one-extension
 
 ## Who this project is for
@@ -33,7 +33,7 @@ It is not currently suitable for Chrome Web Store submission, managed enterprise
 - Connects to the macOS `com.apple.passwordmanager` native helper.
 - Uses the Open Passwords SRP/AES-GCM protocol for encrypted credential queries.
 - Finds, fills, saves, and updates passwords.
-- Generates strong passwords that adapt to a page's declared length, pattern, character-class, and symbol rules, then validates the result again before filling. Generated passwords never use `-`.
+- Generates passwords for supported page length, pattern, character-class, and symbol rules, then validates them before filling. Optional length/symbol controls stay within the site's constraints. Generated passwords never use `-` or overwrite current-password fields.
 - Prioritizes credentials whose saved site exactly matches the current hostname, then shows related-domain matches.
 - Supports passkey bridging and optional suppression of silent conditional-passkey suggestions.
 - Shows saved verification-code entries and fills codes with origin/frame checks.
@@ -65,7 +65,7 @@ Hide My Email uses the browser's existing signed-in iCloud.com session. The exte
 
 No private address is created merely because an email field receives focus. The user must choose **Create Private Address**, review the candidate, and then choose **Use**.
 
-Password compatibility is based on rules the page exposes through HTML attributes and nearby guidance. A site can still enforce additional JavaScript or server-side rules that are invisible to extensions; in that case Apple All-In-One stops instead of silently filling a known-incompatible password.
+Password compatibility is based on HTML attributes and field-specific guidance. Unsupported patterns or conflicting requirements produce an explicit warning instead of a supposedly compatible password. Hidden JavaScript or server-side restrictions cannot be predicted, so a site may still reject a generated password.
 
 ## Requirements and installation
 

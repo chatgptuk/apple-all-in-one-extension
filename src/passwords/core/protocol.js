@@ -5,6 +5,7 @@
 // ported from au2001/icloud-passwords-firefox (Apache-2.0). see NOTICE
 
 import { SRPSession, SecretSessionVersion, MSGType } from "./srp.js";
+import { accountKey } from './account-identity.js';
 import {
   bytesToBase64,
   base64ToBytes,
@@ -86,6 +87,7 @@ export class ApplePasswords {
     this._challengeAt = 0; // when the current code went up on the Mac
     this._challengeGen = 0; // bumped per challenge, so a queued verify can spot a stale one
     this._challengePending = undefined; // in-flight requestChallenge, shared by callers
+    this._connecting = undefined;
     // native protocol echoes the same cmd on replies with no correlation id, so two
     // in-flight requests with the same cmd collide. serialize all exchanges here
     this._lock = Promise.resolve();
@@ -151,40 +153,60 @@ export class ApplePasswords {
         timeoutMs == null
           ? null
           : setTimeout(() => {
-              // only drop our own entry, never a newer request's
-              if (this._waiters.get(cmd) === entry) this._waiters.delete(cmd);
-              reject(new Error("timeout waiting for response"));
+              // The helper does not echo request IDs. A late reply on this port
+              // cannot safely be distinguished from the next same-command reply.
+              if (this._waiters.get(cmd) === entry) {
+                this._retireConnection(new Error("timeout waiting for response"));
+              }
             }, timeoutMs);
       this._waiters.set(cmd, entry);
       try {
         this.port.postMessage({ cmd, ...body });
       } catch (e) {
-        if (entry.timer) clearTimeout(entry.timer);
-        if (this._waiters.get(cmd) === entry) this._waiters.delete(cmd);
-        reject(e);
+        this._retireConnection(e);
       }
     });
   }
 
-  _dispatch(message) {
+  _rejectWaiters(error) {
+    for (const waiter of this._waiters.values()) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    this._waiters.clear();
+  }
+
+  _retireConnection(error = new Error('connection closed'), state = State.Disconnected) {
+    const port = this.port;
+    this.port = undefined;
+    this.session = undefined;
+    this._challengeAt = 0;
+    this._challengeGen++;
+    this._rejectWaiters(error);
+    this._setState(state);
+    try { port?.disconnect(); } catch (_) {}
+  }
+
+  _dispatch(message, sourcePort = this.port) {
+    if (!this.port || sourcePort !== this.port) return;
+    if (message.cmd === Command.PASSWORDS_DISABLED || message.cmd === Command.RELOGIN_NEEDED) {
+      this._retireConnection(new Error('Apple Passwords session expired'));
+      return;
+    }
     const w = this._waiters.get(message.cmd);
     if (w) {
       this._waiters.delete(message.cmd);
       if (w.timer) clearTimeout(w.timer);
       w.resolve(message);
     }
-    // unsolicited session-invalidation signals from the helper
-    if (message.cmd === Command.PASSWORDS_DISABLED || message.cmd === Command.RELOGIN_NEEDED) {
-      this.session = undefined;
-      this._setState(State.NeedsPin);
-    }
   }
 
   // does NOT reset an existing unlocked session (core fix vs Apple's extension,
   // which re-pairs on every connect)
   async connect() {
+    if (this._connecting) return this._connecting;
     if (this.port) return;
-    return new Promise((resolve, reject) => {
+    const connecting = new Promise((resolve, reject) => {
       let port;
       try {
         port = chrome.runtime.connectNative(NATIVE_HOST);
@@ -194,18 +216,17 @@ export class ApplePasswords {
       }
       this.port = port;
 
-      port.onMessage.addListener((msg) => this._dispatch(msg));
+      port.onMessage.addListener((msg) => this._dispatch(msg, port));
       port.onDisconnect.addListener(() => {
         const err = chrome.runtime.lastError?.message;
-        this.port = undefined;
-        // session key lives only in memory, dropped port means we must re-pair
-        this.session = undefined;
-        if (err && /not found|forbidden|host/i.test(err)) this._setState(State.NoHelper);
-        else this._setState(State.Disconnected);
+        if (this.port !== port) return;
+        this._retireConnection(new Error(err || 'connection closed'),
+          err && /not found|forbidden|host/i.test(err) ? State.NoHelper : State.Disconnected);
       });
 
       this._send(Command.GET_CAPABILITIES)
         .then((reply) => {
+          if (this.port !== port) throw new Error('connection replaced');
           this.capabilities = reply.capabilities ?? {};
           // capabilities flag may be absent or default to "old"; real helper
           // negotiates per-handshake via PROTO (we send + verify RFC there). only
@@ -214,7 +235,9 @@ export class ApplePasswords {
             this.capabilities.secretSessionVersion !== undefined &&
             this.capabilities.secretSessionVersion !== SecretSessionVersion.SRPWithRFCVerification
           ) {
-            return reject(new Error("unsupported capabilities (expected SRP RFC verification)"));
+            const error = new Error("unsupported capabilities (expected SRP RFC verification)");
+            this._retireConnection(error, State.NoHelper);
+            return reject(error);
           }
           this.session = new SRPSession(this.capabilities.shouldUseBase64);
           this._setState(State.NeedsPin);
@@ -222,6 +245,9 @@ export class ApplePasswords {
         })
         .catch(reject);
     });
+    this._connecting = connecting;
+    try { return await connecting; }
+    finally { if (this._connecting === connecting) this._connecting = undefined; }
   }
 
   // is there a challenge the user can still answer? the code on the Mac only belongs to
@@ -343,7 +369,10 @@ export class ApplePasswords {
   }
 
   async _encryptedQuery(cmd, tabId, wireUrl, payloadBody, timeoutMs, options = {}) {
-    const sdata = this.session.serialize(await this.session.encrypt(payloadBody));
+    const session = this.session;
+    if (!session?.sharedKey) throw new Error('not unlocked');
+    const sdata = session.serialize(await session.encrypt(payloadBody));
+    if (this.session !== session) throw new Error('session changed');
     const qid =
       options.qid ??
       (cmd === Command.GET_LOGIN_NAMES_FOR_URL ? "CmdGetLoginNames4URL" : "CmdGetPassword4LoginName");
@@ -362,8 +391,9 @@ export class ApplePasswords {
     if (typeof payload === "string") payload = JSON.parse(payload);
     let smsg = payload?.SMSG;
     if (typeof smsg === "string") smsg = JSON.parse(smsg);
-    if (!smsg || smsg.TID !== this.session.username) throw new Error("response for another session");
-    const data = await this.session.decrypt(this.session.deserialize(smsg.SDATA));
+    if (this.session !== session || !smsg || smsg.TID !== session.username) throw new Error("response for another session");
+    const data = await session.decrypt(session.deserialize(smsg.SDATA));
+    if (this.session !== session) throw new Error('session changed');
     return JSON.parse(bytesToUtf8(data));
   }
 
@@ -413,7 +443,7 @@ export class ApplePasswords {
         INTERACTIVE_SECRET_TIMEOUT_MS, // allow Touch ID, but never block later lookups forever
       );
       if (res.STATUS === QueryStatus.Success) {
-        const e = queryEntries(res)[0];
+        const e = queryEntries(res).find((entry) => accountKey(entryUsername(entry)) === accountKey(loginName.username));
         if (!e) return undefined;
         // apple's reply is USR/PWD/customTitle/highLevelDomain/sites - no note or OTP seed (verified), cant surface those
         return {
@@ -497,27 +527,19 @@ export class ApplePasswords {
           SMSG: JSON.stringify({ TID: this.session.username, SDATA: sdata }),
         },
       };
-      // the ack is empty and user confirmation happens in the native prompt, so a
-      // missing or slow ack is not an error
-      try {
-        await this._send(Command.SET_PASSWORD_FOR_LOGIN_NAME_URL, body, 3000);
-      } catch (e) {
-        if (!/timeout/i.test(String(e?.message ?? e))) throw e;
-      }
+      // Save is fire-and-forget: some helper versions never acknowledge it.
+      // Do not install a waiter or apply the reply-required timeout policy here.
+      // Any later cmd-6 acknowledgment is unsolicited and cannot steal a reply.
+      if (!this.ready) throw new Error('not unlocked');
+      this.port.postMessage({ cmd: Command.SET_PASSWORD_FOR_LOGIN_NAME_URL, ...body });
       return true;
     });
   }
 
   disconnect() {
-    if (!this.port) return;
     try {
-      this.port.postMessage({ cmd: Command.END });
+      this.port?.postMessage({ cmd: Command.END });
     } catch (_) {}
-    try {
-      this.port.disconnect();
-    } catch (_) {}
-    this.port = undefined;
-    this.session = undefined;
-    this._setState(State.Disconnected);
+    this._retireConnection();
   }
 }

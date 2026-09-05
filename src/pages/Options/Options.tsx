@@ -3,10 +3,12 @@ import React, { useEffect, useState } from 'react';
 import BrandIcon from '../../components/BrandIcon';
 import Symbol from '../../components/Symbol';
 import { useBrowserStorageState } from '../../hooks';
-import ICloudClient, { PremiumMailSettings } from '../../iCloudClient';
+import ICloudClient from '../../iCloudClient';
+import { ManagedPremiumMailSettings as PremiumMailSettings } from '../../hmeService';
 import { LanguagePreference, setLanguagePreference, tr } from '../../i18n';
 import { DEFAULT_STORE } from '../../storage';
 import './Options.css';
+import '../../styles/apple-design.css';
 
 const SIGNED_OUT_COPY = () => tr(
   'Sign in to iCloud.com from the Hide My Email tab before changing the forwarding address.',
@@ -211,12 +213,6 @@ const ForwardingSettings = () => {
       }
 
       const client = new ICloudClient(clientState.setupUrl, clientState.webservices, clientState.dsid);
-      if (!(await client.isAuthenticated())) {
-        setError(SIGNED_OUT_COPY());
-        setLoading(false);
-        return;
-      }
-
       try {
         const result = await new PremiumMailSettings(client).listHme();
         setEmails(result.forwardToEmails);

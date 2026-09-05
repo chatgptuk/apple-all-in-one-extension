@@ -104,9 +104,11 @@ test('recent password fills reuse the same in-memory credential without extendin
 
   cache.set('LOGIN.EXAMPLE.COM', credential);
   clock = 110_000;
-  assert.equal(cache.get('login.example.com', ' person@example.com\u200B '), credential);
+  assert.equal(cache.get('login.example.com', ' person@example.com\u200B '), null);
+  assert.equal(cache.get('login.example.com', 'Person@example.com'), credential);
   clock = 220_000;
-  assert.equal(cache.get('login.example.com', 'PERSON@EXAMPLE.COM'), credential);
+  assert.equal(cache.get('login.example.com', 'PERSON@EXAMPLE.COM'), null);
+  assert.equal(cache.get('login.example.com', 'Person@example.com'), credential);
   clock = 300_001;
   assert.equal(cache.get('login.example.com', 'Person@example.com'), null);
   assert.match(
@@ -153,7 +155,7 @@ test('popup saved-login clicks fill the page and open a popup-only secret detail
   );
   assert.match(
     background,
-    /const chosen = requested[\s\S]*normUsername\(item\.username\) === requested[\s\S]*: items\.find/
+    /const chosen = selectAccountCode\(items, msg\.username\)/
   );
 });
 
@@ -166,7 +168,7 @@ test('standalone verification-code clicks fill and reveal from one secret read',
   assert.match(background, /case "fillOtpOnPage"[\s\S]*const detail = \{[\s\S]*code: String\(chosen\.code\)[\s\S]*detail,/);
   assert.match(
     background,
-    /const chosen = requested[\s\S]*normUsername\(item\.username\) === requested[\s\S]*: items\.find/
+    /const chosen = selectAccountCode\(items, msg\.username\)/
   );
   assert.doesNotMatch(popup, /fillAndShowOtp[\s\S]{0,900}window\.close\(\)/);
 });

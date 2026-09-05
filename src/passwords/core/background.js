@@ -3,6 +3,7 @@
 import { ApplePasswords, State } from "./protocol.js";
 import { orderLoginsForHost } from "./login-order.js";
 import { createPasswordCache } from "./password-cache.js";
+import { accountKey, selectAccountCode } from './account-identity.js';
 
 const client = new ApplePasswords();
 
@@ -17,10 +18,10 @@ function broadcast(msg) {
 }
 
 // most-recently-used login per host (in-memory), so the dropdown floats your usual account up
-const mruByHost = new Map(); // host -> [username lowercased, most recent first]
+const mruByHost = new Map(); // host -> [exact username, most recent first]
 function recordMru(host, username) {
   if (!host || !username) return;
-  const u = username.toLowerCase();
+  const u = accountKey(username);
   const arr = (mruByHost.get(host) || []).filter((x) => x !== u);
   arr.unshift(u);
   mruByHost.set(host, arr.slice(0, 10));
@@ -31,7 +32,7 @@ function orderForHost(host, logins) {
 
 // which account a submitted password attaches to ("" lets the native sheet ask, null saves nothing); in the background so a redirect cant lose it
 function pickSaveTarget({ host, existing, detected, generated, newPwCtx }) {
-  const matched = detected && existing.find((u) => u.toLowerCase() === detected.toLowerCase());
+  const matched = detected && existing.find((u) => accountKey(u) === accountKey(detected));
   // update only on a new password, stay quiet on a plain re-login
   if (matched) return generated || newPwCtx ? matched : null;
   if (detected) return detected;
@@ -46,8 +47,8 @@ function pickSaveTarget({ host, existing, detected, generated, newPwCtx }) {
 // new-password saves that arrived while locked; a reset can navigate away, so stash and flush on unlock
 const pendingSaves = [];
 function queuePendingSave(save) {
-  const k = `${save.host} ${(save.detected || "").toLowerCase()}`;
-  const i = pendingSaves.findIndex((p) => `${p.host} ${(p.detected || "").toLowerCase()}` === k);
+  const k = JSON.stringify([save.host, accountKey(save.detected)]);
+  const i = pendingSaves.findIndex((p) => JSON.stringify([p.host, accountKey(p.detected)]) === k);
   if (i >= 0) pendingSaves.splice(i, 1); // newest wins
   pendingSaves.push(save);
   while (pendingSaves.length > 10) pendingSaves.shift();
@@ -70,15 +71,7 @@ async function flushPendingSaves() {
   }
 }
 
-// collapse identical-looking usernames: trailing/leading space, zero-width chars, case, and
-// unicode composition all equal. keeps internal spaces so distinct usernames arent merged
-function normUsername(u) {
-  return (u || "")
-    .normalize("NFC")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")
-    .trim()
-    .toLowerCase();
-}
+const normUsername = accountKey;
 
 // helper returns the same username several times (www + apex entries, or a stray-space dupe).
 // fills look up by username, so extra rows only ever fetch the same credential - drop them
@@ -127,10 +120,14 @@ function isMissingReceiverError(error) {
 // automatically receive the new static content script. An explicit toolbar fill should recover
 // that tab instead of surfacing Chrome's opaque "Receiving end does not exist" error.
 // Injection happens only after a user-triggered fill and only into the requested frame.
-async function sendToPasswordContent(tabId, message, frameId = 0) {
+async function sendToPasswordContent(tabId, message, frameId = 0, binding) {
+  const options = binding?.documentId ? { documentId: binding.documentId } : { frameId };
+  const payload = binding ? { ...message, ...binding } : message;
   try {
-    return await chrome.tabs.sendMessage(tabId, message, { frameId });
+    return await chrome.tabs.sendMessage(tabId, payload, options);
   } catch (error) {
+    // Never recover a secret delivery into a new document after authentication.
+    if (binding) throw error;
     if (!isMissingReceiverError(error) || !chrome.scripting?.executeScript) throw error;
     await chrome.scripting.executeScript({
       target: { tabId, frameIds: [frameId] },
@@ -139,6 +136,13 @@ async function sendToPasswordContent(tabId, message, frameId = 0) {
     await new Promise((resolve) => setTimeout(resolve, 40));
     return await chrome.tabs.sendMessage(tabId, message, { frameId });
   }
+}
+
+async function preparePasswordFill(tabId, url, frameId = 0, documentId) {
+  const expectedOrigin = new URL(url).origin;
+  const target = await sendToPasswordContent(tabId, { type: 'prepareFill', expectedOrigin, expectedHref: new URL(url).href }, frameId);
+  if (!target?.ok || !target.documentToken || !target.targetToken) throw new Error('The sign-in page changed. Select the field again.');
+  return { expectedOrigin, expectedDocumentToken: target.documentToken, targetToken: target.targetToken, ...(documentId ? { documentId } : {}) };
 }
 
 // defeat the MV3 ~30s idle shutdown that kills the session
@@ -350,20 +354,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!/^https:\/\//i.test(frameUrl) && !isLocalDevHost(host)) {
             return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS frame" });
           }
+          const binding = await preparePasswordFill(sender.tab.id, frameUrl, frameId, sender.documentId);
           await ensureConnected();
           if (!client.ready) return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
 
           const items = await client.getOneTimeCodeForURL(sender.tab.id, frameUrl);
-          const requested = normUsername(msg.username || "");
-          const chosen =
-            items.find((item) => item.code && requested && normUsername(item.username) === requested) ||
-            items.find((item) => item.code);
+          const chosen = selectAccountCode(items, msg.username);
           if (!chosen?.code) return sendResponse({ ok: false, filled: false, error: "No verification code is available for this website." });
 
           const resp = await sendToPasswordContent(
             sender.tab.id,
             { type: "fillOtp", code: String(chosen.code), expectedHost: host },
             frameId,
+            binding,
           );
           sendResponse({
             ok: true,
@@ -396,6 +399,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // ignore caller-supplied loginName.sites, query by frame's own host
           // (handled in protocol.js); pass only username through
           const safeLogin = { username: msg.loginName?.username };
+          const binding = await preparePasswordFill(sender.tab.id, frameUrl, frameId, sender.documentId);
+          await ensureConnected();
           // cache hit skips the helper read and its Touch ID; miss reads then caches
           let cred = pwCacheGet(host, safeLogin.username);
           if (!cred) {
@@ -413,6 +418,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 expectedHost: host,
               },
               frameId, // requesting frame only
+              binding,
             );
             filled = !!resp?.filled;
             if (!filled && resp?.reason === "no_login_field") {
@@ -518,13 +524,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!/^https:\/\//i.test(tab.url) && !isLocalDevHost(host)) {
             return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS page" });
           }
+          const binding = await preparePasswordFill(tab.id, tab.url);
           await ensureConnected();
           if (!client.ready) return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
           const items = await client.getOneTimeCodeForURL(tab.id, tab.url);
-          const requested = normUsername(msg.username || "");
-          const chosen = requested
-            ? items.find((item) => item.code && normUsername(item.username) === requested)
-            : items.find((item) => item.code);
+          const chosen = selectAccountCode(items, msg.username);
           if (!chosen?.code) return sendResponse({ ok: false, filled: false, error: "No verification code is available for this website." });
           const fetchedAt = Date.now();
           const detail = {
@@ -542,6 +546,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               tab.id,
               { type: "fillOtp", code: String(chosen.code), expectedHost: host },
               0,
+              binding,
             );
           } catch (e) {
             return sendResponse({
@@ -644,6 +649,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!/^https:\/\//i.test(tab.url) && !isLocalDev) {
             return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS page" });
           }
+          const binding = await preparePasswordFill(tab.id, tab.url);
           await ensureConnected();
           if (!client.ready) {
             return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
@@ -668,7 +674,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               username: cred.username,
               password: cred.password,
               expectedHost: host,
-            }, 0);
+            }, 0, binding);
             filled = !!resp?.filled;
             if (!filled && resp?.reason === "no_login_field") {
               return sendResponse({
@@ -707,10 +713,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
           }
           const items = await client.getOneTimeCodeForURL(tab.id, tab.url);
-          const requested = normUsername(msg.username || "");
-          const chosen = requested
-            ? items.find((item) => item.code && normUsername(item.username) === requested)
-            : items.find((item) => item.code);
+          const chosen = selectAccountCode(items, msg.username);
           const fetchedAt = Date.now();
           sendResponse({
             ok: true,
@@ -738,6 +741,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             return sendResponse({ ok: true, refilled: false });
           }
           try {
+            const binding = await preparePasswordFill(tab.id, tab.url);
             const cred = await client.getPasswordForLoginName(tab.id, tab.url, { username: entry.username });
             if (!cred) return sendResponse({ ok: true, refilled: false });
             pwCacheSet(host, cred);
@@ -746,7 +750,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               username: cred.username,
               password: cred.password,
               expectedHost: host,
-            }, 0);
+            }, 0, binding);
             sendResponse({ ok: true, refilled: !!resp?.filled, username: cred.username, reason: resp?.reason });
           } catch (e) {
             sendResponse({ ok: true, refilled: false, error: String(e?.message ?? e) });

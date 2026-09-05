@@ -5,7 +5,6 @@ import BrandIcon from '../../components/BrandIcon';
 import Symbol from '../../components/Symbol';
 import ICloudClient, {
   HmeEmail,
-  PremiumMailSettings,
   DEFAULT_SETUP_URL,
   CN_SETUP_URL,
   type ICloudAuthenticationFailureHandler,
@@ -34,6 +33,10 @@ import {
 } from '../../i18n';
 import { PopupState } from './stateMachine';
 import './Popup.css';
+import '../../styles/apple-design.css';
+import { ManagedPremiumMailSettings as PremiumMailSettings } from '../../hmeService';
+import { hmeListCacheKey } from '../../hmeRepository';
+import { useHmeList } from '../../useHmeList';
 
 type View = 'generate' | 'manage' | 'details';
 type MailActivityStatus = 'idle' | 'syncing' | 'ready' | 'unavailable' | 'error';
@@ -44,50 +47,12 @@ type HmeWithActivity = HmeEmail & {
 
 const MAIL_ACTIVITY_CACHE_TTL = 24 * 60 * 60 * 1000;
 const MAIL_ACTIVITY_SCAN_THREADS = 80;
-const HME_LIST_CACHE_TTL = 2 * 60 * 1000;
-const HME_LIST_SESSION_CACHE_KEY = 'hmeListSessionCacheV1';
-type HmeListSnapshot = {
-  emails: HmeEmail[];
-  forwardTo?: string;
-  fetchedAt: number;
-  refreshKey: number;
-};
-const hmeListCache = new Map<string, HmeListSnapshot>();
-const hmeListCacheKey = (client: ICloudClient) => `${client.setupUrl}\n${client.dsid || ''}`;
-const readHmeListSnapshot = async (cacheKey: string): Promise<HmeListSnapshot | undefined> => {
-  const memorySnapshot = hmeListCache.get(cacheKey);
-  if (memorySnapshot) return memorySnapshot;
-  try {
-    const stored = await browser.storage.session.get(HME_LIST_SESSION_CACHE_KEY);
-    const record = stored[HME_LIST_SESSION_CACHE_KEY] as {
-      cacheKey?: string;
-      snapshot?: HmeListSnapshot;
-    } | undefined;
-    if (record?.cacheKey !== cacheKey || !Array.isArray(record.snapshot?.emails)) return undefined;
-    hmeListCache.set(cacheKey, record.snapshot);
-    return record.snapshot;
-  } catch {
-    return undefined;
+const invalidateHmeListSnapshot = async (key?: string) => {
+  if (!key) {
+    const state = await getBrowserStorageValue('clientState');
+    if (state) key = hmeListCacheKey(state);
   }
-};
-const writeHmeListSnapshot = async (cacheKey: string, snapshot: HmeListSnapshot) => {
-  hmeListCache.set(cacheKey, snapshot);
-  try {
-    await browser.storage.session.set({
-      [HME_LIST_SESSION_CACHE_KEY]: { cacheKey, snapshot },
-    });
-  } catch {
-    // In-memory caching still prevents reloads while this popup stays open.
-  }
-};
-const invalidateHmeListSnapshot = async (cacheKey?: string) => {
-  if (cacheKey) hmeListCache.delete(cacheKey);
-  else hmeListCache.clear();
-  try {
-    await browser.storage.session.remove(HME_LIST_SESSION_CACHE_KEY);
-  } catch {
-    // Older browsers may not expose storage.session.
-  }
+  if (key) await browser.runtime.sendMessage({ type: 'hme:manager', key, operation: 'invalidate' }).catch(() => {});
 };
 
 const cx = (...classes: Array<string | false | undefined>) => classes.filter(Boolean).join(' ');
@@ -468,10 +433,10 @@ const HmeSegmentedControl = ({
   onChange: (value: 'generate' | 'manage') => void;
 }) => (
   <nav className="hme-segmented" aria-label={tr('Hide My Email sections', '隐藏邮件地址分区')}>
-    <button type="button" className={cx(value === 'generate' && 'is-selected')} onClick={() => onChange('generate')}>
+    <button type="button" aria-pressed={value === 'generate'} className={cx(value === 'generate' && 'is-selected')} onClick={() => onChange('generate')}>
       {tr('New Address', '新建地址')}
     </button>
-    <button type="button" className={cx(value === 'manage' && 'is-selected')} onClick={() => onChange('manage')}>
+    <button type="button" aria-pressed={value === 'manage'} className={cx(value === 'manage' && 'is-selected')} onClick={() => onChange('manage')}>
       {tr('My Addresses', '我的地址')}
     </button>
   </nav>
@@ -492,10 +457,10 @@ type PasswordOtpDetail = {
 
 const AppSegmentedControl = ({ value, onChange }: { value: AppSection; onChange: (value: AppSection) => void }) => (
   <nav className="app-segmented" aria-label={tr('Apple All-In-One sections', 'Apple All-In-One 分区')}>
-    <button type="button" className={cx(value === 'passwords' && 'is-selected')} onClick={() => onChange('passwords')}>
+    <button type="button" aria-pressed={value === 'passwords'} className={cx(value === 'passwords' && 'is-selected')} onClick={() => onChange('passwords')}>
       <Symbol name="key" size={15} /> {tr('Passwords', '密码')}
     </button>
-    <button type="button" className={cx(value === 'hide-email' && 'is-selected')} onClick={() => onChange('hide-email')}>
+    <button type="button" aria-pressed={value === 'hide-email'} className={cx(value === 'hide-email' && 'is-selected')} onClick={() => onChange('hide-email')}>
       <Symbol name="mail" size={15} /> {tr('Hide My Email', '隐藏邮件地址')}
     </button>
   </nav>
@@ -963,7 +928,7 @@ const PasswordsView = () => {
 
   return (
     <div className="hme-view-body passwords-view">
-      <div className="password-site-heading"><span>{tr('This Website', '此网站')}</span><strong>{host}</strong><button type="button" className="hme-circle-action" onClick={async () => { clearLoginDetail(); await sendPasswordMessage({ type: 'clearCache' }); await loadSiteItems(); }}><Symbol name="refresh" size={16} /></button></div>
+      <div className="password-site-heading"><span>{tr('This Website', '此网站')}</span><strong>{host}</strong><button type="button" className="hme-circle-action" aria-label={tr('Refresh saved items', '刷新已保存项目')} onClick={async () => { clearLoginDetail(); await sendPasswordMessage({ type: 'clearCache' }); await loadSiteItems(); }}><Symbol name="refresh" size={16} /></button></div>
       {logins.length > 0 && <>
         <div className="hme-section-label">{tr('Saved Passwords', '已保存的密码')}</div>
         <section className="hme-group unified-password-list">
@@ -1427,67 +1392,17 @@ const ManageView = ({
   onSelect: (hme: HmeWithActivity) => void;
   refreshKey: number;
 }) => {
-  const cacheKey = hmeListCacheKey(client);
-  const cachedList = hmeListCache.get(cacheKey);
-  const initialCachedList = cachedList?.refreshKey === refreshKey ? cachedList : undefined;
-  const [emails, setEmails] = useState<HmeEmail[] | undefined>(() => initialCachedList?.emails);
-  const [forwardTo, setForwardTo] = useState<string | undefined>(() => initialCachedList?.forwardTo);
+  const { emails, setEmails, forwardTo, isLoading, error, setError, refresh } = useHmeList(client, refreshKey);
   const [activity, setActivity] = useState<Record<string, number>>({});
   const [activityStatus, setActivityStatus] = useState<MailActivityStatus>('idle');
   const [activityMessage, setActivityMessage] = useState('');
   const [activityRefreshKey, setActivityRefreshKey] = useState(0);
   const [search, setSearch] = useState('');
-  const [isLoading, setIsLoading] = useState(!initialCachedList);
-  const [error, setError] = useState<string>();
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [bulkBusy, setBulkBusy] = useState<'deactivate' | 'delete'>();
   const [bulkMessage, setBulkMessage] = useState('');
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      const cached = await readHmeListSnapshot(cacheKey);
-      if (cancelled) return;
-      const cacheMatchesView = !!cached && cached.refreshKey === refreshKey;
-      const cacheIsFresh =
-        cacheMatchesView &&
-        Date.now() - cached.fetchedAt < HME_LIST_CACHE_TTL;
-      if (cacheMatchesView) {
-        setEmails(cached.emails);
-        setForwardTo(cached.forwardTo);
-        setIsLoading(false);
-      }
-      if (!cacheMatchesView) setIsLoading(true);
-      setError(undefined);
-      try {
-        const cachedActivity = await getBrowserStorageValue('mailActivityCache');
-        if (cancelled) return;
-        if (cachedActivity?.byAlias) setActivity(cachedActivity.byAlias);
-        if (cacheIsFresh) return;
-
-        const result = await new PremiumMailSettings(client).listHme();
-        if (cancelled) return;
-        const sorted = [...result.hmeEmails].sort((a, b) => b.createTimestamp - a.createTimestamp);
-        const snapshot = {
-          emails: sorted,
-          forwardTo: result.selectedForwardTo,
-          fetchedAt: Date.now(),
-          refreshKey,
-        };
-        await writeHmeListSnapshot(cacheKey, snapshot);
-        if (cancelled) return;
-        setEmails(sorted);
-        setForwardTo(result.selectedForwardTo);
-      } catch (e) {
-        if (!cancelled) setError(String(e));
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
-    };
-    load();
-    return () => { cancelled = true; };
-  }, [cacheKey, client, refreshKey]);
 
   useEffect(() => {
     if (!emails || !forwardTo) return;
@@ -1617,8 +1532,6 @@ const ManageView = ({
         const next = current?.map((item) =>
           succeeded.has(item.anonymousId) ? { ...item, isActive: false } : item
         );
-        const snapshot = hmeListCache.get(cacheKey);
-        if (next && snapshot) void writeHmeListSnapshot(cacheKey, { ...snapshot, emails: next });
         return next;
       });
     }
@@ -1670,8 +1583,6 @@ const ManageView = ({
         const next = current
           ?.filter((item) => !deletedIds.has(item.anonymousId))
           .map((item) => deactivatedIds.has(item.anonymousId) ? { ...item, isActive: false } : item);
-        const snapshot = hmeListCache.get(cacheKey);
-        if (next && snapshot) void writeHmeListSnapshot(cacheKey, { ...snapshot, emails: next });
         return next;
       });
     }
@@ -1748,7 +1659,7 @@ const ManageView = ({
             type="button"
             className="hme-activity-refresh"
             disabled={selectionMode || activityStatus === 'syncing' || !emails?.length}
-            onClick={() => setActivityRefreshKey((value) => value + 1)}
+            onClick={() => { refresh(); setActivityRefreshKey((value) => value + 1); }}
             title={tr('Refresh mail activity', '刷新收信活动')}
             aria-label={tr('Refresh mail activity', '刷新收信活动')}
           >
@@ -1856,7 +1767,7 @@ const DetailsView = ({
     setMailStatus('idle');
     setMailError(undefined);
     setCopiedCodeId(undefined);
-  }, [hme]);
+  }, [hme.anonymousId]);
 
   const copy = async () => {
     await navigator.clipboard.writeText(item.hme);
@@ -2405,6 +2316,8 @@ const Popup = () => {
 
   const handleHmeAuthenticationFailure = useCallback<ICloudAuthenticationFailureHandler>(
     async () => {
+      const current = await getBrowserStorageValue('clientState');
+      if (current && clientState && hmeListCacheKey(current) !== hmeListCacheKey(clientState)) return;
       if (hmeAuthFailureInFlight.current) return;
       hmeAuthFailureInFlight.current = true;
 
@@ -2503,7 +2416,6 @@ const Popup = () => {
 
         {appSection === 'hide-email' && !hmeLoading && hmeClient && view === 'generate' && (
           <GenerateView client={hmeClient} onCreated={() => {
-            void invalidateHmeListSnapshot(hmeListCacheKey(hmeClient));
             setRefreshKey((key) => key + 1);
           }} />
         )}
@@ -2525,7 +2437,6 @@ const Popup = () => {
             hme={selected}
             onBack={() => setView('manage')}
             onChanged={(deleted, next) => {
-              void invalidateHmeListSnapshot(hmeListCacheKey(hmeClient));
               setRefreshKey((key) => key + 1);
               if (deleted) {
                 setSelected(undefined);

@@ -120,3 +120,9 @@ button.row:hover, button.row:focus-visible { background: var(--hover); outline: 
   box-shadow: inset 0 .5px 0 rgba(255,255,255,.42), 0 2px 7px rgba(0,103,216,.20);
 }
 .row-icon { color: #0a84ff; }
+/* Compact, optional controls stay inside the trusted extension iframe. */
+.password-controls { margin: 8px 14px; font-size: 12px; }
+.password-controls summary { cursor: pointer; color: #087fff; }
+.password-controls label { display: block; margin-top: 8px; }
+.password-controls input { display: block; box-sizing: border-box; width: 100%; margin-top: 4px; padding: 6px 8px; border: 1px solid #8886; border-radius: 6px; background: transparent; color: inherit; }
+.password-controls button { margin-top: 8px; padding: 5px 12px; border: 0; border-radius: 6px; background: #087fff; color: white; cursor: pointer; }
