@@ -11,7 +11,7 @@ An independent, open-source Chromium extension that brings Apple Passwords, pass
 
 This project is not endorsed by, sponsored by, authorized by, or affiliated with Apple Inc. Apple, iCloud, iCloud+, Apple Passwords, and related names are Apple trademarks used here only to describe compatibility and the services being accessed.
 
-**Current version:** 1.3.0<br>
+**Current version:** 1.3.1<br>
 **Repository:** https://github.com/chatgptuk/apple-all-in-one-extension
 
 ## Who this project is for
@@ -52,7 +52,7 @@ Save feedback distinguishes waiting for unlock, submitted to Apple, failed, and 
 - Reuses the address list from a two-minute session cache; stale data is shown immediately while a silent refresh runs.
 - Supports direct deletion of active aliases by performing `deactivate → delete`.
 - Supports multi-select bulk deactivate/delete with retryable partial failures.
-- Filters by website and active/inactive status, sorts by label or date, and loads large lists progressively. Search covers the complete cached list; bulk selection explicitly states the number of matching addresses.
+- Shows all addresses in one continuous list, with website/status filters and label/date sorting—no pagination or “show more” step. Search covers the complete cached list; bulk selection explicitly states the number of matching addresses. Website icons still load on demand.
 - Opens a dedicated, wider **Address Manager** tab for browsing and editing addresses. It does not read passwords or fill a background webpage.
 - Lets you associate exact website hostnames with an address locally. Associations and list preferences are separated by iCloud account and do not modify Apple's website metadata.
 - Identifies associated websites and displays Chromium-resolved favicons with deterministic fallbacks.

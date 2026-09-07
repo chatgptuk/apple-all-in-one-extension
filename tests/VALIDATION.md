@@ -21,6 +21,7 @@ The focused suite executes real production functions/modules against synthetic D
 For visual QA, run `node tests/preview-server.mjs`, then open these URLs in the Codex in-app browser:
 
 - `http://127.0.0.1:4179/popup.html`: real production popup, synthetic accounts and addresses. Check expansion/collapse, metadata saving and the updated list.
+- Add `?many=1` (or `?manager=1&many=1` for the separate manager) to verify all 660 synthetic addresses render at once, without “Show More”. Check the last row, search/clear, filters and bulk selection; website icons must remain lazy-loaded.
 - `http://127.0.0.1:4179/inline-preview.html`: real inline chooser. Simulates failed signup requests and permits testing length/symbol controls and retries.
 - `http://127.0.0.1:4179/form-preview.html`: real production content script on a change-password form, with current/new/confirmation/unrelated fields and browser-native HTML pattern validation.
 - Add `?httpCrypto=1` to the form preview to remove `randomUUID` and reproduce a non-secure page's Crypto API surface (loopback itself is considered trustworthy by browsers).

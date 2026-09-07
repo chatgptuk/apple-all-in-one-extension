@@ -5,12 +5,10 @@ export type AddressSort = 'created' | 'label' | 'activity';
 export type ManagerViewState = {
   filter: AddressFilter;
   sort: AddressSort;
-  visibleCount: number;
   scrollTop: number;
 };
-export const ADDRESS_PAGE_SIZE = 50;
 export const DEFAULT_MANAGER_VIEW: ManagerViewState = {
-  filter: 'all', sort: 'created', visibleCount: ADDRESS_PAGE_SIZE, scrollTop: 0,
+  filter: 'all', sort: 'created', scrollTop: 0,
 };
 
 /** Persist only presentation settings, never the search text or selected addresses. */
@@ -21,9 +19,6 @@ export function sanitizeManagerView(value: unknown): ManagerViewState {
       ? state!.filter! : 'all',
     sort: ['created', 'label', 'activity'].includes(state?.sort || '')
       ? state!.sort! : 'created',
-    visibleCount: Number.isFinite(state?.visibleCount)
-      ? Math.max(ADDRESS_PAGE_SIZE, Math.min(5000, Math.ceil(state!.visibleCount! / ADDRESS_PAGE_SIZE) * ADDRESS_PAGE_SIZE))
-      : ADDRESS_PAGE_SIZE,
     scrollTop: Number.isFinite(state?.scrollTop) ? Math.max(0, Math.min(1_000_000, state!.scrollTop!)) : 0,
   };
 }

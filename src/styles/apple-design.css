@@ -256,8 +256,6 @@ button:not(:disabled), select, summary { cursor: pointer; }
 .hme-list-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .hme-list-controls select { width: 100%; min-height: 36px; padding: 7px 9px; border: .5px solid var(--apple-separator); border-radius: 10px; color: var(--apple-label); background: var(--apple-surface); font-size: 12px; }
 .hme-results-summary, .hme-filter-context { margin: -5px 3px 0; font-size: 12px; line-height: 1.45; color: var(--apple-secondary); overflow-wrap: anywhere; }
-.hme-load-more { display: flex; justify-content: center; gap: 8px; width: 100%; min-height: 40px; border: 0; border-radius: 12px; background: var(--apple-fill); color: var(--apple-blue); font-size: 13px; }
-.hme-load-more span { color: var(--apple-secondary); }
 .hme-bulk-summary { gap: 8px; flex-wrap: wrap; }
 .hme-bulk-summary button { font-size: 12px; min-height: 30px; }
 .hme-site-links { padding: 13px 14px; }

@@ -84,7 +84,7 @@
       forwardToEmail: 'synthetic@example.test',
     },
   ];
-  if (params.get('many') === '1') emails = Array.from({ length: 685 }, (_, index) => ({
+  if (params.get('many') === '1') emails = Array.from({ length: 660 }, (_, index) => ({
     ...emails[0], anonymousId: `qa-${index}`, hme: `synthetic-${index}@icloud.com`,
     domain: index % 3 === 0 ? 'example.test' : 'other.test',
     label: index === 684 ? 'Search beyond first page' : `Example ${index + 1}`,
@@ -128,7 +128,7 @@
       id: 'qa-extension',
       lastError: undefined,
       onMessage: runtimeMessages,
-      getManifest: () => ({ version: '1.3.0' }),
+      getManifest: () => ({ version: '1.3.1' }),
       getURL: (value) => new URL(value, location.origin).href,
       openOptionsPage: (cb) => respond(undefined, cb),
       sendMessage(message, cb) {

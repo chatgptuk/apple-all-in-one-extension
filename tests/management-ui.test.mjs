@@ -2,21 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTs, read } from './source-harness.mjs';
 
-const { selectManagedAddresses, sanitizeManagerView, ADDRESS_PAGE_SIZE } = loadTs('src/pages/Popup/management-model.ts');
+const { selectManagedAddresses, sanitizeManagerView } = loadTs('src/pages/Popup/management-model.ts');
 const { canRetryPasswordRequest } = loadTs('src/pages/Popup/password-requests.ts');
-const aliases = Array.from({ length: 125 }, (_, index) => ({
+const aliases = Array.from({ length: 660 }, (_, index) => ({
   anonymousId: `alias-${index}`, hme: `private-${index}@icloud.com`,
-  label: `Website ${index + 1}`, domain: 'example.test', note: index === 124 ? 'find me' : '',
+  label: `Website ${index + 1}`, domain: 'example.test', note: index === 659 ? 'find me' : '',
   createTimestamp: 1000 - index, isActive: index % 2 === 0,
   lastReceivedAt: index === 90 ? 100 : undefined,
 }));
 const select = (options = {}) => selectManagedAddresses(aliases, { search: '', filter: 'all', sort: 'created', ...options });
 
-test('address search covers the complete account list before progressive rendering', () => {
-  assert.equal(ADDRESS_PAGE_SIZE, 50);
-  assert.equal(select().slice(0, ADDRESS_PAGE_SIZE).length, 50);
+test('all 660 addresses are available without pagination and search reaches the last entry', () => {
+  assert.equal(select().length, 660);
+  assert.equal(select().at(-1).anonymousId, 'alias-659');
   assert.equal(select({ search: 'FIND ME' }).length, 1);
-  assert.equal(select({ search: 'FIND ME' })[0].anonymousId, 'alias-124');
+  assert.equal(select({ search: 'FIND ME' })[0].anonymousId, 'alias-659');
   assert.equal(select({ search: 'private-90@' })[0].anonymousId, 'alias-90');
 });
 
@@ -38,11 +38,11 @@ test('status and sort are deterministic without treating unobserved activity as 
 
 test('remembered manager state excludes account data, query and selected IDs', () => {
   const result = sanitizeManagerView({ filter: 'active', sort: 'activity', visibleCount: 101, scrollTop: 800, search: 'secret', selectedIds: ['private-id'], password: 'secret' });
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), { filter: 'active', sort: 'activity', visibleCount: 150, scrollTop: 800 });
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { filter: 'active', sort: 'activity', scrollTop: 800 });
   const invalid = sanitizeManagerView({ filter: 'delete', sort: 'password', visibleCount: Infinity, scrollTop: -1 });
   assert.equal(invalid.filter, 'all');
   assert.equal(invalid.sort, 'created');
-  assert.equal(invalid.visibleCount, 50);
+  assert.equal(invalid.visibleCount, undefined, 'legacy pagination preferences are discarded');
   assert.equal(invalid.scrollTop, 0);
 });
 
@@ -50,7 +50,8 @@ test('management wiring scopes presentation and activity by account and labels f
   const popup = read('src/pages/Popup/Popup.tsx');
   assert.match(popup, /hme-manager-view:\$\{hmeListCacheKey\(client\)\}/);
   assert.match(popup, /hme-mail-activity:\$\{hmeListCacheKey\(client\)\}/);
-  assert.match(popup, /filtered\.slice\(0, presentation\.visibleCount\)/);
+  assert.match(popup, /filtered\.map\(\(hme\) => \(/);
+  assert.doesNotMatch(popup, /visibleCount|ADDRESS_PAGE_SIZE|hme-load-more|Show More Addresses/);
   assert.match(popup, /Select All \$\{filtered\.length\} Matching/);
   assert.match(popup, /filtered\.forEach\(\(item\) => next\.add/);
 });

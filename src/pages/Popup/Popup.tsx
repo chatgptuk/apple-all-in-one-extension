@@ -38,7 +38,7 @@ import { ManagedPremiumMailSettings as PremiumMailSettings } from '../../hmeServ
 import { hmeListCacheKey } from '../../hmeRepository';
 import { useHmeList } from '../../useHmeList';
 import { matchHmeAliases, normalizeHmeHost } from '../../hme-site-matching';
-import { ADDRESS_PAGE_SIZE, DEFAULT_MANAGER_VIEW, sanitizeManagerView, selectManagedAddresses, type AddressFilter, type AddressSort, type ManagerViewState } from './management-model';
+import { DEFAULT_MANAGER_VIEW, sanitizeManagerView, selectManagedAddresses, type AddressFilter, type AddressSort, type ManagerViewState } from './management-model';
 import { canRetryPasswordRequest } from './password-requests';
 
 const IS_MANAGER = new URLSearchParams(window.location.search).get('manager') === '1';
@@ -1786,8 +1786,6 @@ const ManageView = ({
     return selectManagedAddresses(withActivity, { search, filter: presentation.filter, sort: presentation.sort, currentIds });
   }, [activity, activityStatus, emails, search, currentHost, siteLinks, presentation.filter, presentation.sort]);
 
-  const visibleAddresses = filtered.slice(0, presentation.visibleCount);
-
   const selectedCount = selectedIds.size;
   const allVisibleSelected = filtered.length > 0 && filtered.every((item) => selectedIds.has(item.anonymousId));
 
@@ -1832,17 +1830,17 @@ const ManageView = ({
 
       <div className="hme-search-field">
         <Symbol name="search" size={16} />
-        <input type="search" value={search} disabled={!!bulkBusy} onChange={(e) => { managerQueries.set(viewStorageKey, e.target.value); setSearch(e.target.value); updatePresentation({ visibleCount: ADDRESS_PAGE_SIZE }); }} placeholder={tr('Search all addresses', '搜索全部地址')} aria-label={tr('Search addresses', '搜索地址')} />
+        <input type="search" value={search} disabled={!!bulkBusy} onChange={(e) => { managerQueries.set(viewStorageKey, e.target.value); setSearch(e.target.value); updatePresentation({}); }} placeholder={tr('Search all addresses', '搜索全部地址')} aria-label={tr('Search addresses', '搜索地址')} />
       </div>
 
       <div className="hme-list-controls">
-        <label><span className="sr-only">{tr('Filter addresses', '筛选地址')}</span><select value={presentation.filter} disabled={!!bulkBusy} onChange={(event) => updatePresentation({ filter: event.target.value as AddressFilter, visibleCount: ADDRESS_PAGE_SIZE })} aria-label={tr('Filter addresses', '筛选地址')}>
+        <label><span className="sr-only">{tr('Filter addresses', '筛选地址')}</span><select value={presentation.filter} disabled={!!bulkBusy} onChange={(event) => updatePresentation({ filter: event.target.value as AddressFilter })} aria-label={tr('Filter addresses', '筛选地址')}>
           <option value="all">{tr('All Addresses', '全部地址')}</option>
           {!IS_MANAGER && <option value="current" disabled={!currentHost}>{tr('This Website', '当前网站')}</option>}
           <option value="active">{tr('Active', '已启用')}</option>
           <option value="inactive">{tr('Inactive', '已停用')}</option>
         </select></label>
-        <label><span className="sr-only">{tr('Sort addresses', '地址排序')}</span><select value={presentation.sort} disabled={!!bulkBusy} onChange={(event) => updatePresentation({ sort: event.target.value as AddressSort, visibleCount: ADDRESS_PAGE_SIZE })} aria-label={tr('Sort addresses', '地址排序')}>
+        <label><span className="sr-only">{tr('Sort addresses', '地址排序')}</span><select value={presentation.sort} disabled={!!bulkBusy} onChange={(event) => updatePresentation({ sort: event.target.value as AddressSort })} aria-label={tr('Sort addresses', '地址排序')}>
           <option value="created">{tr('Newest First', '最新创建优先')}</option>
           <option value="label">{tr('Label A–Z', '按标签排序')}</option>
           <option value="activity">{tr('Recent Mail First', '近期收信优先')}</option>
@@ -1850,7 +1848,7 @@ const ManageView = ({
       </div>
       {presentation.filter === 'current' && currentHost && <p className="hme-filter-context">{currentHost}</p>}
       {presentation.sort === 'activity' && <p className="hme-filter-context">{tr('Recent scans only. No recorded mail does not mean an address is unused.', '仅参考近期扫描；未记录到收信不代表地址没有使用。')}</p>}
-      {!isLoading && <p className="hme-results-summary" role="status">{getResolvedLanguage() === 'zh-CN' ? `${filtered.length} 个匹配地址 · 已显示 ${visibleAddresses.length} 个` : `${filtered.length} matching · ${visibleAddresses.length} shown`}</p>}
+      {!isLoading && (search || presentation.filter !== 'all') && <p className="hme-results-summary" role="status">{getResolvedLanguage() === 'zh-CN' ? `${filtered.length} 个匹配地址` : `${filtered.length} matching addresses`}</p>}
 
       {activityMessage && (
         <div className={cx('hme-activity-status', activityStatus === 'error' && 'is-error', activityStatus === 'unavailable' && 'is-muted')}>
@@ -1865,7 +1863,7 @@ const ManageView = ({
         <div className="hme-loading-state"><Spinner /> <span>{tr('Loading addresses…', '正在载入地址…')}</span></div>
       ) : filtered.length ? (
         <section className="hme-group hme-address-list">
-          {visibleAddresses.map((hme) => (
+          {filtered.map((hme) => (
             <AliasListItem
               key={hme.anonymousId}
               hme={hme}
@@ -1882,7 +1880,6 @@ const ManageView = ({
           <span>{search || presentation.filter !== 'all' ? tr('Try another filter or search.', '请尝试其他筛选条件或搜索词。') : tr('Create your first private address from New Address.', '从“新建地址”创建你的第一个隐藏邮件地址。')}</span>
         </div>
       )}
-      {visibleAddresses.length < filtered.length && <button type="button" className="hme-load-more" onClick={() => { const next = { ...presentationRef.current, visibleCount: presentation.visibleCount + ADDRESS_PAGE_SIZE }; presentationRef.current = next; setPresentation(next); }}>{tr('Show More Addresses', '显示更多地址')} <span>{Math.min(ADDRESS_PAGE_SIZE, filtered.length - visibleAddresses.length)}</span></button>}
 
       {selectionMode && (
         <div className="hme-bulk-toolbar" role="region" aria-label={tr('Bulk address actions', '批量地址操作')}>
