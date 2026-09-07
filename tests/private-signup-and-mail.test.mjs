@@ -115,7 +115,8 @@ test('smart signup keeps alias discovery in the extension and requires a chooser
   const content = readProjectFile('src/passwords/content.js');
   const inline = readProjectFile('src/passwords/inline.js');
 
-  assert.match(background, /findExistingAliasForHost/);
+  assert.match(background, /matchHmeAliases/);
+  assert.match(background, /aliasesForSite\(clientState, host\)/);
   assert.match(background, /message\.type === 'hme:create-for-site'/);
   assert.match(content, /appleSignInControl/);
   assert.match(content, /msg\.type === 'smart-signup'/);

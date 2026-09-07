@@ -3,6 +3,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { webcrypto } from 'node:crypto';
 import { randomToken } from '../src/passwords/random-token.js';
+import * as contracts from '../src/passwords/message-contracts.js';
 
 export const read = (path) =>
   readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -67,15 +68,22 @@ export function functionsFrom(path, names, globals = {}) {
     Date,
     setTimeout,
     clearTimeout,
+    // Function-isolation tests can opt into the real lifecycle helpers explicitly.
+    scheduleSecretCleanup: () => {},
+    sitePreferences: { suggestions: 'automatic', privateSignup: true },
+    sitePreferencesReady: Promise.resolve(),
     ...globals,
   });
   vm.runInContext(bodies.join('\n'), context);
   return context;
 }
 export function contentMessageHandler(globals) {
-  const source = read('src/passwords/content.js');
+  return runtimeMessageHandler('src/passwords/content.js', globals);
+}
+export function runtimeMessageHandler(path, globals) {
+  const source = read(path);
   const tree = ts.createSourceFile(
-    'content.js',
+    path,
     source,
     ts.ScriptTarget.Latest,
     true,
@@ -95,7 +103,10 @@ export function contentMessageHandler(globals) {
     console,
     crypto: webcrypto,
     randomToken,
+    ...contracts,
+    recordDiagnostic: () => {},
     Date,
+    scheduleSecretCleanup: () => {},
     ...globals,
   });
   vm.runInContext(`globalThis.listener = ${handler}`, context);

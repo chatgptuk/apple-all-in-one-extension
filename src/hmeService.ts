@@ -7,15 +7,20 @@ import ICloudClient, {
 import {
   hmeListCacheKey,
   type HmeListSnapshot,
-  type HmeOperation,
+  type HmeOperationArgs,
 } from './hmeRepository';
+import type { HmeSiteLinks } from './hme-site-matching';
+
+type ManagerArgs = HmeOperationArgs & {
+  'site-links': [];
+  'site-links-set': [id: string, hosts: string[]];
+};
 
 /** Popup facade; network/cache ownership stays in the background. */
 export class ManagedPremiumMailSettings {
   constructor(readonly client: ICloudClient) {}
   private async call<T>(
-    operation: HmeOperation,
-    ...args: unknown[]
+    ...[operation, ...args]: { [K in keyof ManagerArgs]: [K, ...ManagerArgs[K]] }[keyof ManagerArgs]
   ): Promise<T> {
     const response = (await browser.runtime.sendMessage({
       type: 'hme:manager',
@@ -75,5 +80,11 @@ export class ManagedPremiumMailSettings {
   }
   updateForwardToHme(email: string) {
     return this.call<void>('forward', email);
+  }
+  siteLinks() {
+    return this.call<HmeSiteLinks>('site-links');
+  }
+  setSiteLinks(id: string, hosts: string[]) {
+    return this.call<string[]>('site-links-set', id, hosts);
   }
 }

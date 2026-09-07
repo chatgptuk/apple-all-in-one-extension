@@ -229,6 +229,84 @@ button:not(:disabled), select, summary { cursor: pointer; }
 .unified-center h2 { font-size: 20px; letter-spacing: -.035em; }
 .unified-center p, .hme-onboarding-copy p { font-size: 12px; line-height: 1.5; }
 
+/* Daily management: prioritize actions and legibility over repeated identity art. */
+.hme-brand-copy p, .password-site-heading > span, .hme-section-label,
+.unified-row-copy small, .hme-list-row-copy span, .hme-list-row-copy small.hme-activity-line,
+.hme-activity-status, .hme-mail-consent div > span { font-size: 12px; line-height: 1.4; }
+.hme-section-label { letter-spacing: .025em; }
+.password-detail-fields dt, .password-detail-fields dd { font-size: 13px; line-height: 1.45; }
+.password-detail-fields > div { grid-template-columns: 76px minmax(0, 1fr); min-height: 48px; }
+.password-detail-fields button { min-height: 32px; font-size: 12px; }
+.password-detail-notice, .password-detail-privacy { font-size: 12px; line-height: 1.45; }
+.password-detail-identity { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; text-align: left; align-items: center; padding: 12px 14px; gap: 9px; }
+.password-detail-identity .hme-site-icon { width: 30px; height: 30px; }
+.password-detail-identity strong { font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+.password-detail-identity button { display: inline-flex; align-items: center; gap: 5px; padding: 7px 5px; border: 0; border-radius: 8px; background: transparent; color: var(--apple-blue); font-size: 12px; white-space: nowrap; }
+.password-entry-tools { display: flex; padding: 0 14px 9px 60px; margin-top: -7px; }
+.password-entry-tools button { border: 0; border-radius: 8px; background: transparent; color: var(--apple-blue); font-size: 12px; padding: 5px 0; min-height: 28px; }
+.password-source-site { font-size: 12px; line-height: 1.35; color: var(--apple-secondary); overflow-wrap: anywhere; }
+.hme-detail-hero { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 4px 12px; text-align: left; padding: 4px 4px 10px; }
+.hme-detail-hero > .hme-site-icon { grid-row: 1 / span 2; width: 42px; height: 42px; }
+.hme-detail-hero > .hme-site-icon img { max-width: 30px; max-height: 30px; }
+.hme-detail-hero .hme-overline { margin: 0; font-size: 12px; line-height: 1.4; text-transform: none; letter-spacing: 0; overflow-wrap: anywhere; }
+.hme-detail-hero h2 { margin: 0; font-size: 17px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+.hme-detail-primary-actions { display: flex; grid-column: 1 / -1; gap: 10px; margin-top: 10px; }
+.hme-detail-primary-actions .hme-pill-button { min-height: 36px; padding: 7px 14px; font-size: 13px; box-shadow: none; background: var(--apple-fill); border-color: transparent; }
+.hme-detail-primary-actions .is-primary { background: var(--apple-accent); color: white; }
+.hme-list-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.hme-list-controls select { width: 100%; min-height: 36px; padding: 7px 9px; border: .5px solid var(--apple-separator); border-radius: 10px; color: var(--apple-label); background: var(--apple-surface); font-size: 12px; }
+.hme-results-summary, .hme-filter-context { margin: -5px 3px 0; font-size: 12px; line-height: 1.45; color: var(--apple-secondary); overflow-wrap: anywhere; }
+.hme-load-more { display: flex; justify-content: center; gap: 8px; width: 100%; min-height: 40px; border: 0; border-radius: 12px; background: var(--apple-fill); color: var(--apple-blue); font-size: 13px; }
+.hme-load-more span { color: var(--apple-secondary); }
+.hme-bulk-summary { gap: 8px; flex-wrap: wrap; }
+.hme-bulk-summary button { font-size: 12px; min-height: 30px; }
+.hme-site-links { padding: 13px 14px; }
+.hme-site-links p { margin: 0 0 10px; color: var(--apple-secondary); font-size: 12px; line-height: 1.5; }
+.hme-site-links ul { list-style: none; margin: 0 0 10px; padding: 0; }
+.hme-site-links li { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; font-size: 13px; overflow-wrap: anywhere; }
+.hme-site-links li button { width: 28px; height: 28px; border: 0; border-radius: 50%; background: var(--apple-fill); color: var(--apple-secondary); flex-shrink: 0; }
+.hme-site-links form { display: flex; gap: 8px; }
+.hme-site-links input { min-width: 0; flex: 1; min-height: 36px; border: .5px solid var(--apple-separator); border-radius: 9px; padding: 7px 9px; background: var(--apple-inset); color: var(--apple-label); font-size: 13px; }
+.hme-site-links form button, .hme-current-site-link { border: 0; border-radius: 9px; background: var(--apple-fill); color: var(--apple-blue); font-size: 12px; padding: 8px 12px; }
+.hme-current-site-link { display: flex; gap: 8px; align-items: center; width: 100%; text-align: left; margin-bottom: 10px; }
+.hme-current-site-link small { display: block; margin-top: 2px; color: var(--apple-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.hme-site-links [role=status] { margin: 10px 0 0; }
+.site-tools { margin: 0 18px 18px; border-top: .5px solid var(--apple-separator); font-size: 12px; }
+.site-tools-summary { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 40px; text-align: left; border: 0; background: transparent; color: var(--apple-secondary); padding: 7px 3px; font-size: 12px; }
+.site-tools-summary > span { flex: 1; }
+.site-tools-chevron.is-expanded { transform: rotate(90deg); }
+.site-tools-content { border: .5px solid var(--apple-separator); border-radius: 16px; background: var(--apple-surface); padding: 13px; }
+.site-session-status { margin: 0; }
+.site-session-status > div { display: flex; justify-content: space-between; gap: 14px; padding: 5px 0; }
+.site-session-status dt { color: var(--apple-secondary); }
+.site-session-status dd { margin: 0; text-align: right; }
+.site-tools fieldset { border: 0; border-top: .5px solid var(--apple-separator); margin: 13px 0 0; padding: 9px 0 0; min-width: 0; }
+.site-tools legend { font-weight: 600; overflow-wrap: anywhere; padding: 0 4px 0 0; }
+.site-tools label { display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 38px; }
+.site-tools select { max-width: 55%; min-height: 32px; border: .5px solid var(--apple-separator); border-radius: 8px; color: var(--apple-label); background: var(--apple-inset); padding: 5px; font-size: 12px; }
+.site-tools input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--apple-blue); }
+.site-tools p { font-size: 12px; line-height: 1.45; color: var(--apple-secondary); margin: 8px 0; }
+.site-tools-diagnostics { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; min-height: 36px; border: 0; border-radius: 10px; color: var(--apple-blue); background: var(--apple-fill); font-size: 12px; margin-top: 10px; }
+.site-tools-recovery { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.site-tools-recovery button { min-height: 32px; border: 0; border-radius: 8px; padding: 6px 10px; color: var(--apple-blue); background: var(--apple-fill); font-size: 12px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+html.hme-manager-page, .hme-manager-page body { width: 100%; min-width: 320px; min-height: 100%; background: var(--apple-bg); }
+.hme-manager-shell { width: min(840px, 100%); height: 100vh; max-height: none; margin: 0 auto; }
+.hme-manager-shell .hme-header { padding: 24px 28px 16px; }
+.hme-manager-shell .hme-brand-copy p { max-width: none; }
+.hme-manager-shell .hme-view-body { padding: 20px 28px 26px; }
+.hme-manager-shell > .hme-segmented { margin: 0 28px; max-width: 360px; }
+.hme-manager-shell .hme-list-row { min-height: 76px; }
+.hme-manager-shell .hme-detail-hero { grid-template-columns: 48px minmax(0, 1fr); }
+.hme-manager-shell .hme-detail-hero h2 { font-size: 22px; }
+.hme-manager-shell .hme-detail-row { min-height: 50px; }
+.hme-manager-shell .site-tools { margin: 0 28px 24px; }
+@media (max-width: 480px) {
+  .hme-manager-shell .hme-header { padding: 18px 16px 12px; }
+  .hme-manager-shell .hme-view-body { padding: 16px; }
+  .hme-manager-shell > .hme-segmented, .hme-manager-shell .site-tools { margin-left: 16px; margin-right: 16px; }
+}
+
 /* Settings and getting started use the same grouped-list proportions. */
 .settings-page { padding: 52px 24px 72px; background: var(--apple-bg); }
 .settings-window { width: min(680px, 100%); }

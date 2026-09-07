@@ -84,6 +84,14 @@
       forwardToEmail: 'synthetic@example.test',
     },
   ];
+  if (params.get('many') === '1') emails = Array.from({ length: 685 }, (_, index) => ({
+    ...emails[0], anonymousId: `qa-${index}`, hme: `synthetic-${index}@icloud.com`,
+    domain: index % 3 === 0 ? 'example.test' : 'other.test',
+    label: index === 684 ? 'Search beyond first page' : `Example ${index + 1}`,
+    createTimestamp: Date.now() - index * 86400000, isActive: index % 4 !== 0,
+  }));
+  const siteLinks = {};
+  let sitePreferences = { suggestions: 'automatic', privateSignup: true };
   let fills = 0,
     reads = 0;
   const snapshot = () => ({
@@ -92,18 +100,50 @@
     forwardToEmails: [],
     fetchedAt: Date.now(),
   });
+  if (params.get('accounts') === '1') document.addEventListener('DOMContentLoaded', () => {
+    const switcher = document.createElement('button');
+    switcher.textContent = 'Switch synthetic iCloud account';
+    switcher.id = 'qa-switch-account';
+    switcher.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:9999;padding:10px';
+    switcher.onclick = () => {
+      emails = [{ ...emails[0], anonymousId: 'account-b-address', hme: 'account-b@icloud.com', label: 'Account B address', note: 'Account B only' }];
+      const oldValue = local.clientState;
+      local.clientState = { ...oldValue, dsid: 'synthetic-account-b' };
+      storageChanges.emit({ clientState: { oldValue, newValue: local.clientState } }, 'local');
+    };
+    document.body.append(switcher);
+  });
+  if (params.get('links') === '1') document.addEventListener('DOMContentLoaded', () => {
+    const linker = document.createElement('button');
+    linker.textContent = 'Simulate website association from another window';
+    linker.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:9999;padding:10px';
+    linker.onclick = () => {
+      siteLinks['qa-1'] = ['example.test'];
+      runtimeMessages.emit({ type: 'hme:list-changed', key: `${local.clientState.setupUrl}\n${local.clientState.dsid}` });
+    };
+    document.body.append(linker);
+  });
   window.chrome = {
     runtime: {
       id: 'qa-extension',
       lastError: undefined,
       onMessage: runtimeMessages,
-      getManifest: () => ({ version: '1.2.21' }),
+      getManifest: () => ({ version: '1.3.0' }),
       getURL: (value) => new URL(value, location.origin).href,
       openOptionsPage: (cb) => respond(undefined, cb),
       sendMessage(message, cb) {
         let result = { ok: true };
         if (message.type === 'getState' || message.type === 'connect')
           result = { ok: true, state: 'unlocked' };
+        if (message.type === 'getSitePreferences' || message.type === 'setSitePreferences') {
+          if (message.preferences) sitePreferences = message.preferences;
+          result = { ok: true, host: 'example.test', preferences: sitePreferences };
+        }
+        if (message.type === 'getDiagnostics') result = { ok: true, report: {
+          version: 'preview', passwordState: 'unlocked', icloudState: 'signed_in',
+          pendingSaveCount: 0, recentEvents: [],
+        } };
+        if (message.type === 'resolveSave') result = { ok: true, saved: false, status: params.get('saveStatus') || 'submitted' };
         if (message.type === 'inlineLogins') result = { ok: true, locked: false, logins: [] };
         if (message.type === 'hme:inline-state') result = { ok: true, ready: true };
         if (message.type === 'hme:create-for-site') result = { ok: true, hme: 'synthetic@icloud.com' };
@@ -111,8 +151,8 @@
           result = {
             ok: true,
             logins: [
-              { username: 'Admin', sites: ['example.test'] },
-              { username: 'admin', sites: ['example.test'] },
+              { username: 'Admin', sites: ['example.test'], sourceWebsite: 'example.test', match: 'exact' },
+              { username: 'admin', sites: ['example.test'], sourceWebsite: 'related.example.test', match: 'related' },
             ],
           };
         if (message.type === 'getOtpItems')
@@ -121,10 +161,11 @@
             items: [{ username: 'Admin', domain: 'example.test' }],
           };
         if (message.type === 'fillOnPage') {
-          fills++;
+          if (message.mode !== 'details') fills++;
           result = {
             ok: true,
             filled: false,
+            ...(message.mode === 'details' ? {} : { reason: 'no_login_field' }),
             detail: {
               username: message.loginName.username,
               password: 'Synthetic-not-a-real-password1!',
@@ -133,10 +174,11 @@
           };
         }
         if (message.type === 'fillOtpOnPage') {
-          fills++;
+          if (message.mode !== 'details') fills++;
           result = {
             ok: true,
             filled: false,
+            ...(message.mode === 'details' ? {} : { reason: 'no_otp_field' }),
             detail: {
               username: 'Admin',
               domain: 'example.test',
@@ -150,6 +192,8 @@
           result = { ok: true, item: null };
         if (message.type === 'hme:manager') {
           const [id, label, note] = message.args || [];
+          if (message.operation === 'site-links') result.result = structuredClone(siteLinks);
+          if (message.operation === 'site-links-set') { siteLinks[id] = label; result.result = label; }
           if (message.operation === 'snapshot') result.result = snapshot();
           if (message.operation === 'list') {
             reads++;
@@ -174,7 +218,7 @@
             );
           if (message.operation === 'delete')
             emails = emails.filter((email) => email.anonymousId !== id);
-          if (!['snapshot', 'list'].includes(message.operation))
+          if (!['snapshot', 'list', 'site-links'].includes(message.operation))
             queueMicrotask(() =>
               runtimeMessages.emit({
                 type: 'hme:list-changed',
@@ -197,6 +241,7 @@
         respond([{ id: 1, url: 'https://example.test/login' }], args.at(-1)),
       sendMessage: (...args) =>
         respond({ ok: true, filled: false }, args.at(-1)),
+      create: (options, cb) => respond({ id: 2, url: options.url }, cb),
     },
     i18n: { getUILanguage: () => 'en', getMessage: (name) => name },
     contextMenus: { update: (...args) => respond(undefined, args.at(-1)) },

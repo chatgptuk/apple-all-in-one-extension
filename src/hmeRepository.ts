@@ -27,6 +27,30 @@ export type HmeOperation =
   | 'delete'
   | 'forward'
   | 'invalidate';
+export type HmeOperationArgs = {
+  snapshot: []; list: [force?: boolean]; generate: [];
+  reserve: [hme: string, label: string, note?: string];
+  metadata: [id: string, label: string, note?: string];
+  deactivate: [id: string]; reactivate: [id: string]; delete: [id: string];
+  forward: [email: string]; invalidate: [];
+};
+
+export function validateHmeOperation(operation: unknown, args: unknown): asserts operation is HmeOperation {
+  const text = (value: unknown, max: number, empty = false) => typeof value === 'string' && value.length <= max && (empty || !!value.trim()) && !/[\u0000-\u001f]/.test(value);
+  const email = (value: unknown) => text(value, 254) && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value as string);
+  const note = (value: unknown) => value === undefined || (typeof value === 'string' && value.length <= 500 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value));
+  if (!Array.isArray(args)) throw new Error('Invalid Hide My Email operation arguments.');
+  let valid = false;
+  switch (operation) {
+    case 'snapshot': case 'generate': case 'invalidate': valid = args.length === 0; break;
+    case 'list': valid = args.length <= 1 && (args[0] === undefined || typeof args[0] === 'boolean'); break;
+    case 'reserve': case 'metadata':
+      valid = args.length >= 2 && args.length <= 3 && (operation === 'reserve' ? email(args[0]) : text(args[0], 255)) && text(args[1], 255) && note(args[2]); break;
+    case 'deactivate': case 'reactivate': case 'delete': valid = args.length === 1 && text(args[0], 255); break;
+    case 'forward': valid = args.length === 1 && email(args[0]); break;
+  }
+  if (!valid) throw new Error('Invalid Hide My Email operation or arguments.');
+}
 type Persistence = {
   read: (key: string) => Promise<HmeListSnapshot | undefined>;
   write: (key: string, snapshot?: HmeListSnapshot) => Promise<void>;
@@ -70,6 +94,7 @@ export class HmeRepository {
     operation: HmeOperation,
     args: unknown[] = []
   ): Promise<unknown> {
+    validateHmeOperation(operation, args);
     const key = hmeListCacheKey(client);
     const epoch = this.epochs.get(key) || 0;
     const run = async () => {

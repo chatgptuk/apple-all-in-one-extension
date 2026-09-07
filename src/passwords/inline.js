@@ -100,7 +100,11 @@ function makeSmartSignupRow(state) {
   const sub = document.createElement('div');
   sub.className = 'row-sub';
   sub.textContent = state.existingHme?.hme
-    ? L('Reuse this address and prepare a strong password', '复用此地址并准备强密码')
+    ? state.existingHme.match === 'related'
+      ? L('Related website · reuse and prepare a strong password', '相关网站 · 复用并准备强密码')
+      : state.existingHme.match === 'linked'
+        ? L('Linked to this website · reuse and prepare a password', '已关联此网站 · 复用并准备密码')
+        : L('This website · reuse and prepare a strong password', '此网站 · 复用并准备强密码')
     : L('Create a private address and prepare a strong password', '创建隐藏地址并准备强密码');
   main.append(title, sub);
   const action = document.createElement('span');
@@ -115,10 +119,11 @@ function makeSmartSignupRow(state) {
       showStatus(L('This website’s password rules could not be satisfied safely. Use its own password generator or review the field requirements.', '无法安全满足此网站的密码规则，请使用网站自带的密码生成器或检查输入框要求。'));
       return;
     }
-    button.disabled = true;
+    for (const row of content.querySelectorAll('.smart-signup-row')) row.disabled = true;
     action.textContent = L('Preparing…', '正在准备…');
     send('smart-signup', {
       hme: state.existingHme?.hme || '',
+      existingHme: state.existingHme?.hme || '',
       password: generated.password,
     }, e, button);
   });
@@ -126,11 +131,13 @@ function makeSmartSignupRow(state) {
 }
 
 function finishSignupOperation() {
-  const button = content.querySelector('.smart-signup-row');
-  if (!button) return;
-  button.disabled = false;
-  const action = button.querySelector('.row-action');
-  if (action) action.textContent = L('Use', '使用');
+  const buttons = content.querySelectorAll ? content.querySelectorAll('.smart-signup-row') : [content.querySelector('.smart-signup-row')];
+  for (const button of buttons) {
+    if (!button) continue;
+    button.disabled = false;
+    const action = button.querySelector('.row-action');
+    if (action) action.textContent = L('Use', '使用');
+  }
 }
 
 function appendSmartSignup(state) {
@@ -141,7 +148,20 @@ function appendSmartSignup(state) {
   content.appendChild(label);
   if (state.hasAppleSignIn) content.appendChild(makeAppleSignInRow());
   if (state.canSmartSignup) {
-    content.appendChild(makeSmartSignupRow(state));
+    const choices = Array.isArray(state.existingHmes) ? state.existingHmes.filter((item) => typeof item?.hme === 'string' && item.hme.includes('@')) : state.existingHme?.hme ? [state.existingHme] : [];
+    content.appendChild(makeSmartSignupRow({ ...state, existingHme: choices[0] }));
+    if (choices.length) {
+      const picker = document.createElement('details');
+      picker.className = 'alias-choices';
+      const summary = document.createElement('summary');
+      summary.className = 'link';
+      summary.textContent = L('Choose another address', '选择其他地址');
+      picker.appendChild(summary);
+      for (const existingHme of choices.slice(1)) picker.appendChild(makeSmartSignupRow({ ...state, existingHme }));
+      picker.appendChild(makeSmartSignupRow({ ...state, existingHme: undefined }));
+      picker.addEventListener('toggle', () => reportHeight());
+      content.appendChild(picker);
+    }
     appendPasswordControls(state.passwordRequirements || {});
   }
   return true;

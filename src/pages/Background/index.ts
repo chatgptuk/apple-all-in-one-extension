@@ -14,13 +14,13 @@ import ICloudClient, {
   classifyICloudFailure,
   UnsuccessfulRequestError,
 } from '../../iCloudClient';
-import { HmeRepository, HME_LIST_SESSION_CACHE_KEY, hmeListCacheKey, type HmeListSnapshot, type HmeOperation } from '../../hmeRepository';
+import { HmeRepository, HME_LIST_SESSION_CACHE_KEY, hmeListCacheKey, validateHmeOperation, type HmeListSnapshot, type HmeOperation } from '../../hmeRepository';
+import { matchHmeAliases, normalizeHmeHost, type HmeSiteMatch } from '../../hme-site-matching';
+import { HmeSiteLinkRepository, HME_SITE_LINKS_STORAGE_KEY } from '../../hme-site-links';
 import {
   ActiveInputElementWriteData,
   ActiveInputElementWriteResponse,
-  Message,
   MessageType,
-  ReservationRequestData,
   sendMessageToTab,
 } from '../../messages';
 import browser from 'webextension-polyfill';
@@ -35,6 +35,10 @@ import {
 import { initializeI18n, tr } from '../../i18n';
 
 const i18nReady = initializeI18n();
+const siteLinks = new HmeSiteLinkRepository({
+  read: async () => (await browser.storage.local.get(HME_SITE_LINKS_STORAGE_KEY))[HME_SITE_LINKS_STORAGE_KEY],
+  write: async (value) => { await browser.storage.local.set({ [HME_SITE_LINKS_STORAGE_KEY]: value }); },
+});
 const hmeRepository = new HmeRepository({
   read: async (key) => {
     const stored = await browser.storage.session.get(HME_LIST_SESSION_CACHE_KEY).catch(() => ({}));
@@ -72,7 +76,12 @@ const runHme = async (client: ICloudClient, operation: HmeOperation, args: unkno
   if (!current || hmeListCacheKey(current) !== hmeListCacheKey(client)) {
     throw new UnsuccessfulRequestError('iCloud session changed', 401, 'POST', 'iCloud');
   }
-  return hmeRepository.execute(client, operation, args);
+  const result = await hmeRepository.execute(client, operation, args);
+  if (operation === 'delete' && client.dsid) {
+    // Deletion has already succeeded remotely; local cleanup must not report it as a failure.
+    await siteLinks.set(hmeListCacheKey(client), String(args[0]), []).catch(() => {});
+  }
+  return result;
 };
 
 // v1.2.2 briefly used a differently named experimental preference. Migrate the
@@ -100,15 +109,6 @@ migrateReconnectPreference().catch(console.debug);
 
 // Toolbar action recovery lives in background-bootstrap.js so it executes before
 // the heavier Passwords/iCloud application bundle and can repair stale tab-scoped state.
-
-const constructClient = async (): Promise<ICloudClient> => {
-  const clientState = await getBrowserStorageValue('clientState');
-  if (clientState === undefined) {
-    console.debug('constructClient: Using default setupUrl');
-    return new ICloudClient(DEFAULT_SETUP_URL);
-  }
-  return new ICloudClient(clientState.setupUrl, clientState.webservices, clientState.dsid, () => performDeauthSideEffects(clientState));
-};
 
 const performDeauthSideEffects = async (expected?: Store['clientState']) => {
   const current = await getBrowserStorageValue('clientState');
@@ -280,18 +280,6 @@ const resolveTrustedICloudClient = async (): Promise<ICloudClient | undefined> =
   return undefined;
 };
 
-const candidateHostname = (value: string | undefined): string | undefined => {
-  const raw = value?.trim();
-  if (!raw || raw.includes('@')) return undefined;
-  try {
-    return new URL(raw.includes('://') ? raw : `https://${raw}`).hostname
-      .replace(/^www\./i, '')
-      .toLocaleLowerCase();
-  } catch {
-    return undefined;
-  }
-};
-
 const aliasesForClient = async (clientState: NonNullable<Store['clientState']>) => {
   const client = new ICloudClient(
     clientState.setupUrl,
@@ -303,45 +291,66 @@ const aliasesForClient = async (clientState: NonNullable<Store['clientState']>) 
   return result.hmeEmails;
 };
 
-const findExistingAliasForHost = (emails: HmeEmail[], host: string): HmeEmail | undefined => {
-  const normalizedHost = host.replace(/^www\./i, '').toLocaleLowerCase();
-  return [...emails]
-    .filter((email) => email.isActive)
-    .sort((left, right) => right.createTimestamp - left.createTimestamp)
-    .find((email) =>
-      [email.domain, email.label, email.note].some((value) => {
-        const candidate = candidateHostname(value);
-        return !!candidate && (
-          candidate === normalizedHost ||
-          normalizedHost.endsWith(`.${candidate}`) ||
-          candidate.endsWith(`.${normalizedHost}`)
-        );
-      })
-    );
+const aliasesForSite = async (state: NonNullable<Store['clientState']>, host: string) => {
+  const [emails, links] = await Promise.all([
+    aliasesForClient(state),
+    state.dsid ? siteLinks.list(hmeListCacheKey(state)) : Promise.resolve({}),
+  ]);
+  return matchHmeAliases(emails, host, links);
 };
+
+const aliasChoice = ({ email, match }: HmeSiteMatch) => ({ hme: email.hme, label: email.label, domain: email.domain, match });
+
+function isHmeManagerSender(sender: browser.Runtime.MessageSender): boolean {
+  return sender.id === browser.runtime.id && ['popup.html', 'options.html'].some((page) => {
+    try {
+      const url = new URL(sender.url || '');
+      url.search = '';
+      url.hash = '';
+      return url.href === browser.runtime.getURL(page);
+    } catch { return false; }
+  });
+}
 
 // Shared secure Passwords chooser asks for Hide My Email only after a real user click.
 // These listeners return synchronously for messages they do not own. This matters because
 // an async onMessage listener that resolves undefined can still race another listener's
 // response channel in Chromium.
 browser.runtime.onMessage.addListener((uncastedMessage: unknown, sender: browser.Runtime.MessageSender) => {
-  const message = uncastedMessage as { type?: string; wantAlias?: boolean; existingHme?: string; key?: string; operation?: HmeOperation; args?: unknown[] };
+  const message = uncastedMessage as { type?: string; wantAlias?: boolean; existingHme?: string; key?: string; operation?: unknown; args?: unknown };
   if (!['hme:inline-state', 'hme:create-for-site', 'hme:created-unfilled', 'hme:manager'].includes(message?.type || '')) return undefined;
 
   return (async () => {
     if (sender.id !== browser.runtime.id) return { ok: false, error: 'forbidden' };
     if (message.type === 'hme:manager') {
-      if (!['popup.html', 'options.html'].some((page) => sender.url?.split(/[?#]/)[0] === browser.runtime.getURL(page))) return { ok: false, error: 'forbidden' };
+      if (!isHmeManagerSender(sender)) return { ok: false, error: 'forbidden' };
       const state = await getBrowserStorageValue('clientState');
       if (!state || hmeListCacheKey(state) !== message.key) return { ok: false, error: tr('The iCloud session changed. Reopen Hide My Email.', 'iCloud 会话已变化，请重新打开隐藏邮件地址页面。') };
       const client = new ICloudClient(state.setupUrl, state.webservices, state.dsid, () => performDeauthSideEffects(state));
       try {
-        const result = await runHme(client, message.operation as HmeOperation, Array.isArray(message.args) ? message.args : []);
+        const args = message.args === undefined ? [] : message.args;
+        if (message.operation === 'site-links' || message.operation === 'site-links-set') {
+          if (!Array.isArray(args) || (message.operation === 'site-links' ? args.length !== 0 : args.length !== 2 || typeof args[0] !== 'string' || !Array.isArray(args[1]))) return { ok: false, error: tr('Invalid website association request.', '网站关联请求无效。') };
+          if (message.operation === 'site-links') return { ok: true, result: await siteLinks.list(message.key!) };
+          if (!args[0] || args[0].length > 255 || ['__proto__', 'constructor', 'prototype'].includes(args[0]) || args[1].length > 32 || args[1].some((value: unknown) => !normalizeHmeHost(value))) return { ok: false, error: tr('Enter valid website hostnames (up to 32 per address).', '请输入有效的网站主机名，每个地址最多关联 32 个网站。') };
+          if (!state.dsid) return { ok: false, error: tr('Reconnect iCloud before editing website associations.', '请重新连接 iCloud 后再编辑网站关联。') };
+          const emails = await aliasesForClient(state);
+          if (!emails.some((email) => email.anonymousId === args[0])) return { ok: false, error: tr('This address is no longer in the current iCloud account.', '此地址已不在当前 iCloud 账户中。') };
+          const result = await siteLinks.set(message.key!, args[0], args[1]);
+          browser.runtime.sendMessage({ type: 'hme:list-changed', key: message.key }).catch(() => {});
+          browser.tabs.query({}).then((tabs) => Promise.all(tabs.filter((tab) => tab.id !== undefined).map((tab) => browser.tabs.sendMessage(tab.id!, { type: 'hme:list-changed' }).catch(() => {})))).catch(() => {});
+          return { ok: true, result };
+        }
+        try { validateHmeOperation(message.operation, args); } catch { return { ok: false, error: tr('Invalid Hide My Email operation or arguments.', '隐藏邮件地址操作或参数无效。') }; }
+        const result = await runHme(client, message.operation, args as unknown[]);
         return { ok: true, result };
       } catch (error) {
+        if ((message.operation === 'site-links' || message.operation === 'site-links-set') && !(error instanceof UnsuccessfulRequestError)) return { ok: false, error: tr('Website associations could not be saved or loaded. Reconnect iCloud and retry.', '无法保存或读取网站关联，请重新连接 iCloud 后重试。') };
         return { ok: false, error: hmeErrorCopy(error), status: error instanceof UnsuccessfulRequestError ? error.status : undefined, retryAfterMs: error instanceof UnsuccessfulRequestError ? error.retryAfterMs : undefined };
       }
     }
+    // Content actions belong to an actual web frame, never an untrusted extension URL.
+    if (sender.tab?.id === undefined || sender.frameId === undefined || !/^https?:\/\//i.test(sender.url || '')) return { ok: false, error: 'forbidden' };
     if (message.type === 'hme:created-unfilled') {
       await createContextNotification(tr('The address was created, but the original form changed. Open My Addresses to copy it.', '地址已创建，但原表单已变化。请打开“我的地址”查看并复制。'));
       return { ok: true };
@@ -351,21 +360,11 @@ browser.runtime.onMessage.addListener((uncastedMessage: unknown, sender: browser
         getBrowserStorageValue('clientState'),
         getBrowserStorageValue('iCloudHmeOptions'),
       ]);
-      let existingHme: Pick<HmeEmail, 'hme' | 'label' | 'domain'> | undefined;
+      let existingHmes: ReturnType<typeof aliasChoice>[] = [];
       if (clientState && message.wantAlias && sender.url) {
         try {
           const senderHost = new URL(sender.url).hostname;
-          const existing = findExistingAliasForHost(
-            await aliasesForClient(clientState),
-            senderHost
-          );
-          if (existing) {
-            existingHme = {
-              hme: existing.hme,
-              label: existing.label,
-              domain: existing.domain,
-            };
-          }
+          existingHmes = (await aliasesForSite(clientState, senderHost)).map(aliasChoice);
         } catch (error) {
           return { ok: false, ready: false, error: hmeErrorCopy(error) };
         }
@@ -373,7 +372,8 @@ browser.runtime.onMessage.addListener((uncastedMessage: unknown, sender: browser
       return {
         ok: true,
         ready: !!clientState && options?.autofill.button !== false,
-        existingHme,
+        existingHme: existingHmes[0],
+        existingHmes,
       };
     }
 
@@ -383,10 +383,10 @@ browser.runtime.onMessage.addListener((uncastedMessage: unknown, sender: browser
 
     if (message.type === 'hme:create-for-site') {
       try {
+        if (message.existingHme !== undefined && (typeof message.existingHme !== 'string' || message.existingHme.length > 254)) return { ok: false, error: 'Invalid address selection.' };
         if (message.existingHme) {
-          const emails = await aliasesForClient(clientState);
           const host = sender.url ? new URL(sender.url).hostname : '';
-          const existing = findExistingAliasForHost(emails.filter((email) => email.hme === message.existingHme), host);
+          const existing = (await aliasesForSite(clientState, host)).find(({ email }) => email.hme === message.existingHme)?.email;
           if (!existing) return { ok: false, error: tr('This address is no longer active or associated with this website. Reopen the chooser.', '此地址已停用或不再匹配此网站，请重新打开选择器。') };
           return { ok: true, hme: existing.hme, reused: true };
         }
@@ -405,71 +405,6 @@ browser.runtime.onMessage.addListener((uncastedMessage: unknown, sender: browser
     }
 
     return { ok: false, error: tr('Unsupported Hide My Email request.', '不支持的隐藏邮件地址请求。') };
-  })();
-});
-
-browser.runtime.onMessage.addListener((uncastedMessage: unknown) => {
-  const message = uncastedMessage as Message<unknown>;
-  if (typeof message?.type !== 'number') return undefined;
-
-  return (async () => {
-    switch (message.type) {
-      case MessageType.GenerateRequest: {
-        const elementId = message.data as string;
-        const deauthCallback = async () => {
-          await sendMessageToTab(MessageType.GenerateResponse, {
-            error: signedOutCtaCopy(),
-            elementId,
-          });
-          await performDeauthSideEffects();
-        };
-
-        const clientState = await getBrowserStorageValue('clientState');
-        if (clientState === undefined) {
-          await deauthCallback();
-          break;
-        }
-
-        const client = new ICloudClient(
-          clientState.setupUrl,
-          clientState.webservices,
-          clientState.dsid,
-          () => performDeauthSideEffects(clientState)
-        );
-        try {
-          const hme = await runHme(client, 'generate');
-          await sendMessageToTab(MessageType.GenerateResponse, { hme, elementId });
-        } catch (e) {
-          await sendMessageToTab(MessageType.GenerateResponse, {
-            error: hmeErrorCopy(e),
-            elementId,
-          });
-        }
-        break;
-      }
-
-      case MessageType.ReservationRequest: {
-        const { hme, label, elementId } = message.data as ReservationRequestData;
-        const client = await constructClient();
-        try {
-          await runHme(client, 'reserve', [hme, label]);
-          await sendMessageToTab(MessageType.ReservationResponse, {
-            hme,
-            elementId,
-          });
-        } catch (e) {
-          await sendMessageToTab(MessageType.ReservationResponse, {
-            error: String(e),
-            elementId,
-          });
-        }
-        break;
-      }
-
-      default:
-        break;
-    }
-    return undefined;
   })();
 });
 

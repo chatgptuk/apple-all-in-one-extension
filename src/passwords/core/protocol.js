@@ -6,6 +6,7 @@
 
 import { SRPSession, SecretSessionVersion, MSGType } from "./srp.js";
 import { accountKey } from './account-identity.js';
+import { selectUniqueSecretForHost } from './login-order.js';
 import {
   bytesToBase64,
   base64ToBytes,
@@ -443,18 +444,28 @@ export class ApplePasswords {
         INTERACTIVE_SECRET_TIMEOUT_MS, // allow Touch ID, but never block later lookups forever
       );
       if (res.STATUS === QueryStatus.Success) {
-        const e = queryEntries(res).find((entry) => accountKey(entryUsername(entry)) === accountKey(loginName.username));
+        const entries = queryEntries(res)
+          .filter((entry) => accountKey(entryUsername(entry)) === accountKey(loginName.username))
+          .map((entry) => ({
+            username: entryUsername(entry),
+            password: entryPassword(entry),
+            sites: entry.sites ?? entry.SITES,
+            highLevelDomain: entry.highLevelDomain ?? entry.HIGH_LEVEL_DOMAIN,
+          }));
+        const e = selectUniqueSecretForHost(hostname, entries, (entry) => typeof entry.password === 'string' ? entry.password : undefined);
         if (!e) return undefined;
         // apple's reply is USR/PWD/customTitle/highLevelDomain/sites - no note or OTP seed (verified), cant surface those
         return {
-          username: entryUsername(e),
-          password: entryPassword(e),
-          sites: e.sites ?? e.SITES,
+          username: e.username,
+          password: e.password,
+          sites: e.sites,
         };
       }
       if (res.STATUS === QueryStatus.NoResults) return undefined;
       throw queryStatusError(res.STATUS);
-    });
+    // Do not open a delayed Touch ID prompt after the UI has already abandoned a
+    // request queued behind another authorization. An active read still gets 60s.
+    }, { queueTimeoutMs: LOOKUP_QUEUE_TIMEOUT_MS });
   }
 
   // Apple Passwords keeps website verification codes behind separate helper commands.
@@ -488,7 +499,7 @@ export class ApplePasswords {
       }
       if (res.STATUS === QueryStatus.NoResults) return [];
       throw queryStatusError(res.STATUS);
-    }, revealCode ? {} : { queueTimeoutMs: LOOKUP_QUEUE_TIMEOUT_MS });
+    }, { queueTimeoutMs: LOOKUP_QUEUE_TIMEOUT_MS });
   }
 
   async listOneTimeCodesForURL(tabId, url) {

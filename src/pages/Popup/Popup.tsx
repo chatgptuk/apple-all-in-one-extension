@@ -37,6 +37,13 @@ import '../../styles/apple-design.css';
 import { ManagedPremiumMailSettings as PremiumMailSettings } from '../../hmeService';
 import { hmeListCacheKey } from '../../hmeRepository';
 import { useHmeList } from '../../useHmeList';
+import { matchHmeAliases, normalizeHmeHost } from '../../hme-site-matching';
+import { ADDRESS_PAGE_SIZE, DEFAULT_MANAGER_VIEW, sanitizeManagerView, selectManagedAddresses, type AddressFilter, type AddressSort, type ManagerViewState } from './management-model';
+import { canRetryPasswordRequest } from './password-requests';
+
+const IS_MANAGER = new URLSearchParams(window.location.search).get('manager') === '1';
+// Keep an in-progress query while opening details, but never persist it to disk.
+const managerQueries = new Map<string, string>();
 
 type View = 'generate' | 'manage' | 'details';
 type MailActivityStatus = 'idle' | 'syncing' | 'ready' | 'unavailable' | 'error';
@@ -47,6 +54,14 @@ type HmeWithActivity = HmeEmail & {
 
 const MAIL_ACTIVITY_CACHE_TTL = 24 * 60 * 60 * 1000;
 const MAIL_ACTIVITY_SCAN_THREADS = 80;
+const accountActivityKey = (client: ICloudClient) => `hme-mail-activity:${hmeListCacheKey(client)}`;
+const readAccountActivity = async (client: ICloudClient): Promise<Store['mailActivityCache']> => {
+  const key = accountActivityKey(client);
+  const stored = await browser.storage.local.get(key);
+  const value = stored[key] as Store['mailActivityCache'];
+  if (!value || typeof value !== 'object' || !Number.isFinite(value.lastScanAt) || !value.byAlias || typeof value.byAlias !== 'object') return undefined;
+  return value;
+};
 const invalidateHmeListSnapshot = async (key?: string) => {
   if (!key) {
     const state = await getBrowserStorageValue('clientState');
@@ -444,7 +459,7 @@ const HmeSegmentedControl = ({
 
 type AppSection = 'passwords' | 'hide-email';
 type PasswordState = 'loading' | 'disconnected' | 'needs_pin' | 'unlocked' | 'no_helper';
-type PasswordLogin = { username?: string };
+type PasswordLogin = { username?: string; sourceWebsite?: string; match?: 'exact' | 'related' | 'unknown'; ambiguous?: boolean };
 type OtpItem = { username?: string; domain?: string; source?: string };
 type PasswordDetail = { username: string; password: string; website: string };
 type PasswordOtpDetail = {
@@ -495,11 +510,95 @@ const sendPasswordMessage = async <T,>(message: Record<string, unknown>, timeout
     } catch (error) {
       lastError = error;
       const text = String(error);
-      if (!/Receiving end does not exist|message port closed|Could not establish connection/i.test(text)) break;
+      if (/Timed out waiting for/i.test(text)) return { ok: false, reason: 'native_timeout' } as T;
+      if (!canRetryPasswordRequest(message.type, error)) break;
     }
   }
   console.debug('Password message failed', message.type, lastError);
   return undefined;
+};
+
+const fillFailureGuidance = (reason?: string) => {
+  switch (reason) {
+    case 'target_changed': return tr('The original field changed. Select the sign-in field again, then retry.', '原来的输入框已变化。请重新点击网页中的登录框，再重试。');
+    case 'no_login_field': return tr('No sign-in field is visible. Click the field on the page, or copy the details here.', '当前未找到登录框。请先点击网页中的输入框，也可以在这里复制账号密码。');
+    case 'no_otp_field': return tr('No verification-code field is visible. Select that field, or copy the code here.', '当前未找到验证码框。请先点击验证码输入框，也可以在这里复制验证码。');
+    case 'insecure_page': return tr('Password filling is blocked on this insecure page. Open the HTTPS version.', '此页面不是安全连接，已阻止密码填充。请打开 HTTPS 版本。');
+    case 'locked': return tr('Apple Passwords is locked. Unlock the password session and retry.', 'Apple 密码尚未解锁。请解锁密码会话后重试。');
+    case 'native_timeout': return tr('Apple did not respond in time. Complete or dismiss the system prompt, then retry.', 'Apple 暂未响应。请完成或关闭系统验证提示后重试。');
+    case 'native_busy': return tr('Another Apple authorization is in progress. Finish it before retrying.', '另一项 Apple 授权正在进行，请处理完成后重试。');
+    case 'authorization_cancelled': return tr('System authorization was not completed. You can retry when ready.', '系统授权未完成。准备好后可以重新尝试。');
+    case 'ambiguous_account': return tr('Apple returned multiple matching accounts. Open Apple Passwords to select the exact entry.', 'Apple 返回了多个同名匹配账号。请在 Apple 密码中选择准确的条目。');
+    default: return tr('This action could not be completed. Select the field again and retry, or copy the details.', '本次操作未完成。请重新选择输入框后重试，或复制所需内容。');
+  }
+};
+
+type SitePreferences = { suggestions: 'automatic' | 'manual'; privateSignup: boolean };
+type DiagnosticReport = { version: string; passwordState: string; icloudState: 'signed_in' | 'signed_out'; pendingSaveCount: number; recentEvents: Array<{ operation: string; reason: string; at: number }> };
+const SiteTools = ({ onPasswords, onHideEmail }: { onPasswords: () => void; onHideEmail: () => void }) => {
+  const [open, setOpen] = useState(false);
+  const [host, setHost] = useState('');
+  const [preferences, setPreferences] = useState<SitePreferences>();
+  const [report, setReport] = useState<DiagnosticReport>();
+  const [saveStatus, setSaveStatus] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
+
+  const load = useCallback(async () => {
+    const diagnostics = await sendPasswordMessage<{ ok?: boolean; report?: DiagnosticReport; saveStatus?: { status: string } }>({ type: 'getDiagnostics' }, 5000);
+    if (diagnostics?.ok) { setReport(diagnostics.report); setSaveStatus(diagnostics.saveStatus?.status); }
+    if (IS_MANAGER) return;
+    const settings = await sendPasswordMessage<{ ok?: boolean; host?: string; preferences?: SitePreferences }>({ type: 'getSitePreferences' }, 5000);
+    if (settings?.ok) { setHost(settings.host || ''); setPreferences(settings.preferences); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+  const update = async (next: SitePreferences) => {
+    setBusy(true); setNotice('');
+    const response = await sendPasswordMessage<{ ok?: boolean; host?: string; preferences?: SitePreferences }>({ type: 'setSitePreferences', preferences: next }, 5000);
+    if (response?.ok) { setPreferences(response.preferences || next); setHost(response.host || host); setNotice(tr('Saved for this website.', '已保存此网站的偏好。')); }
+    else setNotice(tr('Could not save. Reopen the extension on the intended website.', '保存失败。请切回目标网站后重新打开扩展。'));
+    setBusy(false);
+  };
+  const copyReport = async () => {
+    setBusy(true);
+    const diagnostics = await sendPasswordMessage<{ ok?: boolean; report?: DiagnosticReport }>({ type: 'getDiagnostics' }, 5000);
+    try {
+      if (!diagnostics?.ok || !diagnostics.report) throw new Error('unavailable');
+      await navigator.clipboard.writeText(JSON.stringify(diagnostics.report, null, 2));
+      setReport(diagnostics.report); setNotice(tr('Diagnostic report copied. No accounts, passwords, codes or page URLs are included.', '诊断报告已复制，不含账号、密码、验证码或网页地址。'));
+    } catch { setNotice(tr('Could not copy the report. Please retry.', '无法复制诊断报告，请重试。')); }
+    setBusy(false);
+  };
+  const passwordReady = report?.passwordState === 'unlocked';
+  const passwordStatus = !report ? tr('Status unavailable', '状态暂不可用') : passwordReady ? tr('Unlocked', '已解锁') : report.passwordState === 'no_helper' ? tr('System helper unavailable', '系统辅助程序不可用') : report.passwordState === 'disconnected' ? tr('Reconnect required', '需要重新连接') : tr('Unlock required', '需要解锁');
+  return (
+    <section className="site-tools">
+      <button className="site-tools-summary" type="button" aria-expanded={open} aria-controls="site-tools-content" onClick={() => { setOpen(!open); if (!open) void load(); }}>
+        <Symbol name="settings" size={14} />
+        <span>{IS_MANAGER ? tr('Connection & Diagnostics', '连接状态与诊断') : tr('Website Settings & Status', '网站设置与状态')}</span>
+        <Symbol name="chevron-right" size={13} className={cx('site-tools-chevron', open && 'is-expanded')} />
+      </button>
+      {open && <div id="site-tools-content" className="site-tools-content">
+        <dl className="site-session-status">
+          <div><dt>{tr('Apple Passwords', 'Apple 密码')}</dt><dd>{passwordStatus}</dd></div>
+          <div><dt>iCloud / Hide My Email</dt><dd>{report ? report.icloudState === 'signed_in' ? tr('Signed in', '已登录') : tr('Sign in required', '需要登录') : tr('Status unavailable', '状态暂不可用')}</dd></div>
+        </dl>
+        {report && ((!IS_MANAGER && !passwordReady) || report.icloudState === 'signed_out') && <div className="site-tools-recovery">
+          {!IS_MANAGER && !passwordReady && <button type="button" onClick={onPasswords}>{tr('Open Password Unlock', '前往密码解锁')}</button>}
+          {report.icloudState === 'signed_out' && <button type="button" onClick={onHideEmail}>{tr('Reconnect Hide My Email', '重新连接隐藏邮件地址')}</button>}
+        </div>}
+        {saveStatus && <p className="site-tools-save" role="status">{saveStatus === 'waiting_unlock' ? tr('Password save is waiting for unlock.', '密码保存正在等待解锁。') : saveStatus === 'submitted' ? tr('Save request sent to Apple. Check the system prompt to finish.', '保存请求已交给 Apple，请查看系统提示完成保存。') : saveStatus === 'expired' ? tr('The previous save request expired. Submit the form again if needed.', '之前的保存请求已过期，如需保存请重新提交表单。') : tr('Password save was not completed. Please retry.', '密码保存未完成，请重试。')}</p>}
+        {!IS_MANAGER && preferences && host && <fieldset disabled={busy}>
+          <legend>{host}</legend>
+          <label><span>{tr('Inline suggestions', '网页内建议')}</span><select aria-label={tr('Inline suggestions', '网页内建议')} value={preferences.suggestions} onChange={(event) => void update({ ...preferences, suggestions: event.target.value as SitePreferences['suggestions'] })}><option value="automatic">{tr('Automatic', '自动显示')}</option><option value="manual">{tr('Pause on this website', '在此网站暂停')}</option></select></label>
+          <label><span>{tr('Private signup suggestions', '私密注册建议')}</span><input type="checkbox" checked={preferences.privateSignup} onChange={(event) => void update({ ...preferences, privateSignup: event.target.checked })} /></label>
+          <p>{tr('Manual filling from the extension and the right-click menu remains available.', '仍可使用扩展弹窗和右键菜单手动填充。')}</p>
+        </fieldset>}
+        <button type="button" className="site-tools-diagnostics" disabled={busy} onClick={() => void copyReport()}><Symbol name="copy" size={14} />{tr('Copy Safe Diagnostic Report', '复制安全诊断报告')}</button>
+        {notice && <p role="status">{notice}</p>}
+      </div>}
+    </section>
+  );
 };
 
 const PasswordsView = () => {
@@ -745,6 +844,7 @@ const PasswordsView = () => {
       ok?: boolean;
       item?: PasswordOtpDetail | null;
       error?: string;
+      reason?: string;
     }>({ type: 'getOtpForLoginDetails', username }, 65_000);
     if (sequence !== detailLoadSequence.current) return;
     setDetailOtpLoading(false);
@@ -753,11 +853,11 @@ const PasswordsView = () => {
       setOtpNow(Date.now());
     } else {
       setDetailOtp(null);
-      setDetailOtpError(res?.error || tr('Could not read the verification code.', '无法读取验证码。'));
+      setDetailOtpError(fillFailureGuidance(res?.reason));
     }
   };
 
-  const fillAndShowLogin = async (login: PasswordLogin, loginKey: string) => {
+  const fillAndShowLogin = async (login: PasswordLogin, loginKey: string, mode: 'fill' | 'details' = 'fill') => {
     const sequence = ++detailLoadSequence.current;
     const username = login.username || '';
     setExpandedLoginKey(loginKey);
@@ -779,26 +879,18 @@ const PasswordsView = () => {
       error?: string;
       reason?: string;
       detail?: PasswordDetail;
-    }>({ type: 'fillOnPage', loginName: { username } });
+    }>({ type: 'fillOnPage', loginName: { username }, mode }, 65_000);
     if (sequence !== detailLoadSequence.current) return;
     setBusy(undefined);
     if (!res?.ok || !res.detail) {
-      setError(res?.error || tr('Could not open this saved login.', '无法打开这条已保存登录。'));
+      setError(fillFailureGuidance(res?.reason));
       return;
     }
 
     setLoginDetail(res.detail);
-    if (!res.filled && res.reason === 'no_login_field') {
-      setDetailNotice(tr(
-        'Details opened, but no compatible sign-in field is visible on the page.',
-        '已展开详情，但当前页面没有可填充的登录输入框。'
-      ));
-    } else if (!res.filled) {
-      setDetailNotice(tr(
-        'Details opened, but the page was not filled.',
-        '已展开详情，但没有填充当前网页。'
-      ));
-    }
+    if (mode === 'details') setDetailNotice(tr('Details only. Nothing was filled on the page.', '仅查看详情，没有填充网页。'));
+    else if (!res.filled) setDetailNotice(fillFailureGuidance(res.reason));
+    else setDetailNotice(tr('Filled on the page.', '已填充网页。'));
   };
 
   const copyLoginDetail = async (kind: 'username' | 'password' | 'otp', value: string) => {
@@ -813,7 +905,7 @@ const PasswordsView = () => {
     }
   };
 
-  const fillAndShowOtp = async (item: OtpItem, otpKey: string) => {
+  const fillAndShowOtp = async (item: OtpItem, otpKey: string, mode: 'fill' | 'details' = 'fill') => {
     clearLoginDetail();
     const sequence = detailLoadSequence.current;
     setExpandedOtpKey(otpKey);
@@ -825,26 +917,18 @@ const PasswordsView = () => {
       error?: string;
       reason?: string;
       detail?: PasswordOtpDetail;
-    }>({ type: 'fillOtpOnPage', username: item.username || '' });
+    }>({ type: 'fillOtpOnPage', username: item.username || '', mode }, 65_000);
     if (sequence !== detailLoadSequence.current) return;
     setBusy(undefined);
     if (!res?.ok || !res.detail) {
-      setError(res?.error || tr('Could not open this verification code.', '无法打开这条验证码。'));
+      setError(fillFailureGuidance(res?.reason));
       return;
     }
     setOtpEntryDetail(res.detail);
     setOtpNow(Date.now());
-    if (!res.filled && res.reason === 'no_otp_field') {
-      setOtpEntryNotice(tr(
-        'Details opened, but no verification-code field is visible on the page.',
-        '已展开详情，但当前页面没有可填充的验证码输入框。'
-      ));
-    } else if (!res.filled) {
-      setOtpEntryNotice(tr(
-        'Details opened, but the page was not filled.',
-        '已展开详情，但没有填充当前网页。'
-      ));
-    }
+    if (mode === 'details') setOtpEntryNotice(tr('Details only. Nothing was filled on the page.', '仅查看详情，没有填充网页。'));
+    else if (!res.filled) setOtpEntryNotice(fillFailureGuidance(res.reason));
+    else setOtpEntryNotice(tr('Filled on the page.', '已填充网页。'));
   };
 
   const detailOtpSeconds = detailOtp
@@ -960,10 +1044,13 @@ const PasswordsView = () => {
                   <span className="hme-symbol-tile is-purple"><Symbol name="key" size={17} /></span>
                   <span className="unified-row-copy">
                     <strong>{login.username || tr('(no username)', '(无用户名)')}</strong>
+                    {login.sourceWebsite && <span className="password-source-site">{login.sourceWebsite}{login.match === 'related' ? tr(' · Related website', ' · 相关网站') : ''}</span>}
                     <small>{expanded ? tr('Collapse details', '收起详情') : tr('Fill page and open details', '填充网页并展开详情')}</small>
                   </span>
                   {loginBusy ? <Spinner compact /> : <Symbol name="chevron-right" size={15} className={cx('unified-login-chevron', expanded && 'is-expanded')} />}
                 </button>
+
+                {!expanded && <div className="password-entry-tools"><button type="button" disabled={!!busy} onClick={() => void fillAndShowLogin(login, loginKey, 'details')}>{tr('View Details Only', '仅查看详情')}</button></div>}
 
                 {expanded && (
                   <div className="password-detail-card">
@@ -974,8 +1061,9 @@ const PasswordsView = () => {
                     ) : (
                       <>
                         <div className="password-detail-identity">
-                          <SiteIcon domain={loginDetail.website} label={loginDetail.website} large />
+                          <SiteIcon domain={loginDetail.website} label={loginDetail.website} />
                           <strong>{loginDetail.website}</strong>
+                          <button type="button" disabled={!!busy} onClick={() => void fillAndShowLogin(login, loginKey)}><Symbol name="autofill" size={14} />{tr('Fill Again', '再次填充')}</button>
                         </div>
                         <dl className="password-detail-fields">
                           <div>
@@ -997,9 +1085,8 @@ const PasswordsView = () => {
                               </span>
                             </dd>
                           </div>
-                          <div><dt>{tr('Website', '网站')}</dt><dd><span>{loginDetail.website}</span></dd></div>
                         </dl>
-                        {detailNotice && <p className="password-detail-notice"><Symbol name="info" size={14} /> {detailNotice}</p>}
+                        {detailNotice && <p className="password-detail-notice" role="status"><Symbol name="info" size={14} /> {detailNotice}</p>}
                         {detailOtpError && <p className="password-detail-notice"><Symbol name="info" size={14} /> {detailOtpError}</p>}
                         <p className="password-detail-privacy">{tr('Secrets are kept only in this popup and cleared when it closes.', '敏感信息仅保留在当前弹窗内，关闭后即清除。')}</p>
                       </>
@@ -1035,6 +1122,8 @@ const PasswordsView = () => {
                   {otpBusy ? <Spinner compact /> : <Symbol name="chevron-right" size={15} className={cx('unified-login-chevron', expanded && 'is-expanded')} />}
                 </button>
 
+                {!expanded && <div className="password-entry-tools"><button type="button" disabled={!!busy} onClick={() => void fillAndShowOtp(item, otpKey, 'details')}>{tr('View Details Only', '仅查看详情')}</button></div>}
+
                 {expanded && (
                   <div className="password-detail-card">
                     {!otpEntryDetail ? (
@@ -1044,8 +1133,9 @@ const PasswordsView = () => {
                     ) : (
                       <>
                         <div className="password-detail-identity">
-                          <SiteIcon domain={otpEntryWebsite} label={otpEntryWebsite} large />
+                          <SiteIcon domain={otpEntryWebsite} label={otpEntryWebsite} />
                           <strong>{otpEntryWebsite}</strong>
+                          <button type="button" disabled={!!busy} onClick={() => void fillAndShowOtp(item, otpKey)}><Symbol name="autofill" size={14} />{tr('Fill Again', '再次填充')}</button>
                         </div>
                         <dl className="password-detail-fields">
                           <div><dt>{tr('Username', '用户名')}</dt><dd><span>{otpEntryDetail.username || tr('(no username)', '(无用户名)')}</span></dd></div>
@@ -1054,14 +1144,13 @@ const PasswordsView = () => {
                             <dd>
                               {!otpEntryExpired ? <span className="password-detail-otp"><i style={{ background: `conic-gradient(var(--hme-green) ${otpEntrySeconds / 30 * 360}deg, var(--hme-fill) 0deg)` }} /> <b>{formattedOtpEntry}</b><small>{otpEntrySeconds}s</small></span> : <span className="password-detail-muted">{tr('Code expired', '验证码已过期')}</span>}
                               <span className="password-detail-actions">
-                                {otpEntryExpired ? <button type="button" disabled={otpBusy} onClick={() => void fillAndShowOtp(item, otpKey)}>{tr('Refresh', '刷新')}</button> : <button type="button" onClick={() => void copyLoginDetail('otp', otpEntryDetail.code)}>{copiedDetail === 'otp' ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>}
+                                {otpEntryExpired ? <button type="button" disabled={otpBusy} onClick={() => void fillAndShowOtp(item, otpKey, 'details')}>{tr('Refresh', '刷新')}</button> : <button type="button" onClick={() => void copyLoginDetail('otp', otpEntryDetail.code)}>{copiedDetail === 'otp' ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>}
                               </span>
                             </dd>
                           </div>
-                          <div><dt>{tr('Website', '网站')}</dt><dd><span>{otpEntryWebsite}</span></dd></div>
                         </dl>
-                        {otpEntryNotice && <p className="password-detail-notice"><Symbol name="info" size={14} /> {otpEntryNotice}</p>}
-                        <p className="password-detail-privacy">{tr('This code was returned by the same Touch ID-authorized action used to fill the page.', '此验证码来自同一次经 Touch ID 授权的网页填充操作。')}</p>
+                        {otpEntryNotice && <p className="password-detail-notice" role="status"><Symbol name="info" size={14} /> {otpEntryNotice}</p>}
+                        <p className="password-detail-privacy">{tr('Codes are read from Apple on request and cleared when this popup closes.', '验证码按需从 Apple 读取，关闭此弹窗后清除。')}</p>
                       </>
                     )}
                   </div>
@@ -1188,7 +1277,7 @@ const GenerateView = ({ client, onCreated }: { client: ICloudClient; onCreated: 
 
   useEffect(() => {
     const bootstrap = async () => {
-      const tab = await getActiveTabForPopup();
+      const tab = IS_MANAGER ? undefined : await getActiveTabForPopup();
       if (tab?.url) {
         try {
           const hostname = new URL(tab.url).hostname;
@@ -1224,7 +1313,7 @@ const GenerateView = ({ client, onCreated }: { client: ICloudClient; onCreated: 
       );
       setReserved(result);
       onCreated();
-      if (autofill) {
+      if (autofill && !IS_MANAGER) {
         try {
           await sendMessageToTab(MessageType.Autofill, result.hme);
         } catch {
@@ -1250,7 +1339,7 @@ const GenerateView = ({ client, onCreated }: { client: ICloudClient; onCreated: 
     <div className="hme-view-body">
       <div className="hme-page-intro">
         <span>{tr('For', '用于')}</span>
-        <strong>{host || tr('this website', '此网站')}</strong>
+        <strong>{host || (IS_MANAGER ? tr('a new website or purpose', '新的网站或用途') : tr('this website', '此网站'))}</strong>
       </div>
 
       <section className="hme-alias-panel">
@@ -1290,13 +1379,13 @@ const GenerateView = ({ client, onCreated }: { client: ICloudClient; onCreated: 
 
       {!reserved ? (
         <div className="hme-actions">
-          <button className="hme-primary-button" type="button" disabled={!hmeEmail || !label || isGenerating || isReserving} onClick={() => reserve(true)}>
+          <button className="hme-primary-button" type="button" disabled={!hmeEmail || !label || isGenerating || isReserving} onClick={() => reserve(!IS_MANAGER)}>
             {isReserving ? <Spinner compact /> : <Symbol name="autofill" size={18} />}
-            {tr('Use Address', '使用地址')}
+            {IS_MANAGER ? tr('Create Address', '创建地址') : tr('Use Address', '使用地址')}
           </button>
-          <button className="hme-secondary-action" type="button" disabled={!hmeEmail || !label || isGenerating || isReserving} onClick={() => reserve(false)}>
+          {!IS_MANAGER && <button className="hme-secondary-action" type="button" disabled={!hmeEmail || !label || isGenerating || isReserving} onClick={() => reserve(false)}>
             {tr('Create without Autofill', '创建但不自动填充')}
-          </button>
+          </button>}
         </div>
       ) : (
         <section className="hme-group hme-success-group" role="status">
@@ -1309,9 +1398,9 @@ const GenerateView = ({ client, onCreated }: { client: ICloudClient; onCreated: 
           </div>
           <div className="hme-success-buttons">
             <button type="button" onClick={copy}><Symbol name={copied ? 'check' : 'copy'} size={16} />{copied ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>
-            <button type="button" onClick={() => sendMessageToTab(MessageType.Autofill, reserved.hme).catch(() => setError(tr('This page could not be autofilled. Copy the address and paste it manually.', '无法在此页面自动填充。请复制地址并手动粘贴。')))}>
+            {!IS_MANAGER && <button type="button" onClick={() => sendMessageToTab(MessageType.Autofill, reserved.hme).catch(() => setError(tr('This page could not be autofilled. Copy the address and paste it manually.', '无法在此页面自动填充。请复制地址并手动粘贴。')))}>
               <Symbol name="autofill" size={16} />{tr('Autofill', '自动填充')}
-            </button>
+            </button>}
           </div>
         </section>
       )}
@@ -1402,6 +1491,81 @@ const ManageView = ({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [bulkBusy, setBulkBusy] = useState<'deactivate' | 'delete'>();
   const [bulkMessage, setBulkMessage] = useState('');
+  const [presentation, setPresentation] = useState<ManagerViewState>(DEFAULT_MANAGER_VIEW);
+  const [presentationKey, setPresentationKey] = useState('');
+  const [currentHost, setCurrentHost] = useState('');
+  const [siteLinks, setSiteLinks] = useState<Record<string, string[]>>({});
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const presentationRef = useRef(presentation);
+  const scrollRestored = useRef(false);
+  const viewStorageKey = `hme-manager-view:${hmeListCacheKey(client)}`;
+
+  useEffect(() => {
+    let cancelled = false;
+    let linksRevision = 0;
+    scrollRestored.current = false;
+    setPresentationKey('');
+    setSearch(managerQueries.get(viewStorageKey) || '');
+    setSiteLinks({});
+    setActivity({});
+    setActivityStatus('idle');
+    browser.storage.local.get(viewStorageKey).then((stored) => {
+      if (cancelled) return;
+      const next = sanitizeManagerView(stored[viewStorageKey]);
+      if (IS_MANAGER && next.filter === 'current') next.filter = 'all';
+      presentationRef.current = next;
+      setPresentation(next);
+      setPresentationKey(viewStorageKey);
+    }).catch(() => { if (!cancelled) { setPresentation(DEFAULT_MANAGER_VIEW); setPresentationKey(viewStorageKey); } });
+    const reloadLinks = () => {
+      const revision = ++linksRevision;
+      new PremiumMailSettings(client).siteLinks().then((links) => { if (!cancelled && revision === linksRevision) setSiteLinks(links); }).catch(() => {});
+    };
+    const onListChange = (message: unknown) => {
+      const event = message as { type?: string; key?: string };
+      if (event.type === 'hme:list-changed' && event.key === hmeListCacheKey(client)) reloadLinks();
+      return undefined;
+    };
+    reloadLinks();
+    browser.runtime.onMessage.addListener(onListChange);
+    if (!IS_MANAGER) getActiveTabForPopup().then((tab) => { if (!cancelled) setCurrentHost(normalizeHmeHost(tab?.url || '') || ''); }).catch(() => {});
+    return () => { cancelled = true; browser.runtime.onMessage.removeListener(onListChange); };
+  }, [client, viewStorageKey]);
+
+  useEffect(() => {
+    presentationRef.current = presentation;
+    if (presentationKey !== viewStorageKey) return;
+    const timer = window.setTimeout(() => { void browser.storage.local.set({ [viewStorageKey]: presentationRef.current }).catch(() => {}); }, 300);
+    return () => window.clearTimeout(timer);
+  }, [presentation, presentationKey, viewStorageKey]);
+
+  useEffect(() => {
+    if (presentationKey !== viewStorageKey || isLoading) return;
+    const scroll = bodyRef.current?.closest('main');
+    if (!scroll) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (!scrollRestored.current) { scroll.scrollTop = presentationRef.current.scrollTop; scrollRestored.current = true; }
+    });
+    let timer: number | undefined;
+    const save = () => { void browser.storage.local.set({ [viewStorageKey]: presentationRef.current }).catch(() => {}); };
+    const onScroll = () => {
+      presentationRef.current = { ...presentationRef.current, scrollTop: scroll.scrollTop };
+      window.clearTimeout(timer);
+      timer = window.setTimeout(save, 300);
+    };
+    scroll.addEventListener('scroll', onScroll, { passive: true });
+    return () => { window.cancelAnimationFrame(frame); window.clearTimeout(timer); scroll.removeEventListener('scroll', onScroll); save(); };
+  }, [isLoading, presentationKey, viewStorageKey]);
+
+  const updatePresentation = (changes: Partial<ManagerViewState>) => {
+    const next = { ...presentationRef.current, ...changes, scrollTop: 0 };
+    presentationRef.current = next;
+    setPresentation(next);
+    setSelectedIds(new Set());
+    setBulkMessage('');
+    const scroll = bodyRef.current?.closest('main');
+    if (scroll) scroll.scrollTop = 0;
+  };
 
 
   useEffect(() => {
@@ -1420,7 +1584,7 @@ const ManageView = ({
         return;
       }
 
-      const cached = await getBrowserStorageValue('mailActivityCache');
+      const cached = await readAccountActivity(client);
       if (
         activityRefreshKey === 0 &&
         cached?.lastScanAt &&
@@ -1453,7 +1617,7 @@ const ManageView = ({
           lastScanAt: scan.scannedAt,
           scannedThreads: scan.scannedThreads,
         };
-        await setBrowserStorageValue('mailActivityCache', nextCache);
+        await browser.storage.local.set({ [accountActivityKey(client)]: nextCache });
         if (!cancelled) {
           setActivity(merged);
           setActivityStatus('ready');
@@ -1592,11 +1756,11 @@ const ManageView = ({
         deletedAliases.forEach((alias) => delete next[alias]);
         return next;
       });
-      const cached = await getBrowserStorageValue('mailActivityCache');
+      const cached = await readAccountActivity(client);
       if (cached?.byAlias) {
         const byAlias = { ...cached.byAlias };
         deletedAliases.forEach((alias) => delete byAlias[alias]);
-        await setBrowserStorageValue('mailActivityCache', { ...cached, byAlias });
+        await browser.storage.local.set({ [accountActivityKey(client)]: { ...cached, byAlias } });
       }
     }
 
@@ -1613,19 +1777,16 @@ const ManageView = ({
 
   const filtered = useMemo(() => {
     if (!emails) return [];
-    const query = search.trim().toLocaleLowerCase();
     const withActivity: HmeWithActivity[] = emails.map((item) => ({
       ...item,
       lastReceivedAt: activity[item.hme],
       activityStatus,
     }));
-    if (!query) return withActivity;
-    return withActivity.filter((item) =>
-      [item.label, item.domain, item.hme, item.note]
-        .filter(Boolean)
-        .some((value) => value.toLocaleLowerCase().includes(query))
-    );
-  }, [activity, activityStatus, emails, search]);
+    const currentIds = new Set(matchHmeAliases(emails, currentHost, siteLinks, { includeInactive: true }).map(({ email }) => email.anonymousId));
+    return selectManagedAddresses(withActivity, { search, filter: presentation.filter, sort: presentation.sort, currentIds });
+  }, [activity, activityStatus, emails, search, currentHost, siteLinks, presentation.filter, presentation.sort]);
+
+  const visibleAddresses = filtered.slice(0, presentation.visibleCount);
 
   const selectedCount = selectedIds.size;
   const allVisibleSelected = filtered.length > 0 && filtered.every((item) => selectedIds.has(item.anonymousId));
@@ -1640,13 +1801,14 @@ const ManageView = ({
   };
 
   return (
-    <div className={cx('hme-view-body', selectionMode && 'has-selection')}>
+    <div ref={bodyRef} className={cx('hme-view-body', selectionMode && 'has-selection')}>
       <div className="hme-manage-heading">
         <div>
           <h2>{tr('My Addresses', '我的地址')}</h2>
           <span>{emails ? getResolvedLanguage() === 'zh-CN' ? `共 ${emails.length} 个` : `${emails.length} total` : tr('Loading…', '正在载入…')}</span>
         </div>
         <div className="hme-manage-actions">
+          {!IS_MANAGER && <button type="button" className="hme-activity-refresh" title={tr('Open Address Manager', '打开地址管理窗口')} aria-label={tr('Open Address Manager', '打开地址管理窗口')} onClick={() => void browser.tabs.create({ url: browser.runtime.getURL('popup.html?manager=1') })}><Symbol name="external" size={15} /></button>}
           <button
             type="button"
             className="hme-select-toggle"
@@ -1670,8 +1832,25 @@ const ManageView = ({
 
       <div className="hme-search-field">
         <Symbol name="search" size={16} />
-        <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder={tr('Search', '搜索')} aria-label={tr('Search addresses', '搜索地址')} />
+        <input type="search" value={search} disabled={!!bulkBusy} onChange={(e) => { managerQueries.set(viewStorageKey, e.target.value); setSearch(e.target.value); updatePresentation({ visibleCount: ADDRESS_PAGE_SIZE }); }} placeholder={tr('Search all addresses', '搜索全部地址')} aria-label={tr('Search addresses', '搜索地址')} />
       </div>
+
+      <div className="hme-list-controls">
+        <label><span className="sr-only">{tr('Filter addresses', '筛选地址')}</span><select value={presentation.filter} disabled={!!bulkBusy} onChange={(event) => updatePresentation({ filter: event.target.value as AddressFilter, visibleCount: ADDRESS_PAGE_SIZE })} aria-label={tr('Filter addresses', '筛选地址')}>
+          <option value="all">{tr('All Addresses', '全部地址')}</option>
+          {!IS_MANAGER && <option value="current" disabled={!currentHost}>{tr('This Website', '当前网站')}</option>}
+          <option value="active">{tr('Active', '已启用')}</option>
+          <option value="inactive">{tr('Inactive', '已停用')}</option>
+        </select></label>
+        <label><span className="sr-only">{tr('Sort addresses', '地址排序')}</span><select value={presentation.sort} disabled={!!bulkBusy} onChange={(event) => updatePresentation({ sort: event.target.value as AddressSort, visibleCount: ADDRESS_PAGE_SIZE })} aria-label={tr('Sort addresses', '地址排序')}>
+          <option value="created">{tr('Newest First', '最新创建优先')}</option>
+          <option value="label">{tr('Label A–Z', '按标签排序')}</option>
+          <option value="activity">{tr('Recent Mail First', '近期收信优先')}</option>
+        </select></label>
+      </div>
+      {presentation.filter === 'current' && currentHost && <p className="hme-filter-context">{currentHost}</p>}
+      {presentation.sort === 'activity' && <p className="hme-filter-context">{tr('Recent scans only. No recorded mail does not mean an address is unused.', '仅参考近期扫描；未记录到收信不代表地址没有使用。')}</p>}
+      {!isLoading && <p className="hme-results-summary" role="status">{getResolvedLanguage() === 'zh-CN' ? `${filtered.length} 个匹配地址 · 已显示 ${visibleAddresses.length} 个` : `${filtered.length} matching · ${visibleAddresses.length} shown`}</p>}
 
       {activityMessage && (
         <div className={cx('hme-activity-status', activityStatus === 'error' && 'is-error', activityStatus === 'unavailable' && 'is-muted')}>
@@ -1686,7 +1865,7 @@ const ManageView = ({
         <div className="hme-loading-state"><Spinner /> <span>{tr('Loading addresses…', '正在载入地址…')}</span></div>
       ) : filtered.length ? (
         <section className="hme-group hme-address-list">
-          {filtered.map((hme) => (
+          {visibleAddresses.map((hme) => (
             <AliasListItem
               key={hme.anonymousId}
               hme={hme}
@@ -1699,17 +1878,18 @@ const ManageView = ({
       ) : (
         <div className="hme-empty-state">
           <span className="hme-symbol-tile is-gray"><Symbol name="search" size={20} /></span>
-          <strong>{search ? tr('No Results', '没有结果') : tr('No Addresses Yet', '暂无地址')}</strong>
-          <span>{search ? tr('Try a different search.', '请尝试其他搜索词。') : tr('Create your first private address from New Address.', '从“新建地址”创建你的第一个隐藏邮件地址。')}</span>
+          <strong>{search || presentation.filter !== 'all' ? tr('No Matching Addresses', '没有匹配的地址') : tr('No Addresses Yet', '暂无地址')}</strong>
+          <span>{search || presentation.filter !== 'all' ? tr('Try another filter or search.', '请尝试其他筛选条件或搜索词。') : tr('Create your first private address from New Address.', '从“新建地址”创建你的第一个隐藏邮件地址。')}</span>
         </div>
       )}
+      {visibleAddresses.length < filtered.length && <button type="button" className="hme-load-more" onClick={() => { const next = { ...presentationRef.current, visibleCount: presentation.visibleCount + ADDRESS_PAGE_SIZE }; presentationRef.current = next; setPresentation(next); }}>{tr('Show More Addresses', '显示更多地址')} <span>{Math.min(ADDRESS_PAGE_SIZE, filtered.length - visibleAddresses.length)}</span></button>}
 
       {selectionMode && (
         <div className="hme-bulk-toolbar" role="region" aria-label={tr('Bulk address actions', '批量地址操作')}>
           <div className="hme-bulk-summary">
             <strong>{selectedCount ? getResolvedLanguage() === 'zh-CN' ? `已选择 ${selectedCount} 个` : `${selectedCount} Selected` : tr('Select Addresses', '选择地址')}</strong>
             <button type="button" disabled={!filtered.length || !!bulkBusy} onClick={toggleSelectAllVisible}>
-              {allVisibleSelected ? tr('Clear Visible', '清除当前可见选择') : tr('Select Visible', '选择当前可见地址')}
+              {allVisibleSelected ? tr('Clear All Matching', '取消全部匹配项') : getResolvedLanguage() === 'zh-CN' ? `选择全部 ${filtered.length} 个匹配项` : `Select All ${filtered.length} Matching`}
             </button>
           </div>
           {bulkMessage && <div className="hme-bulk-message">{bulkMessage}</div>}
@@ -1756,9 +1936,51 @@ const DetailsView = ({
   const [mailStatus, setMailStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [mailError, setMailError] = useState<string>();
   const [copiedCodeId, setCopiedCodeId] = useState<string>();
+  const [linkedHosts, setLinkedHosts] = useState<string[]>([]);
+  const [currentHost, setCurrentHost] = useState('');
+  const [websiteDraft, setWebsiteDraft] = useState('');
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linksLoaded, setLinksLoaded] = useState(false);
+  const [linkNotice, setLinkNotice] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLinkedHosts([]); setLinksLoaded(false); setLinkNotice('');
+    new PremiumMailSettings(client).siteLinks().then((links) => {
+      if (!cancelled) { setLinkedHosts(links[hme.anonymousId] || []); setLinksLoaded(true); }
+    }).catch(() => { if (!cancelled) setLinkNotice(tr('Website associations could not be loaded. Reopen this address to retry.', '无法读取网站关联，请重新打开此地址重试。')); });
+    if (!IS_MANAGER) getActiveTabForPopup().then((tab) => { if (!cancelled) setCurrentHost(normalizeHmeHost(tab?.url || '') || ''); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [client, hme.anonymousId]);
+
+  const saveLinks = async (hosts: string[]) => {
+    if (linkBusy || !linksLoaded) return;
+    setLinkBusy(true); setLinkNotice('');
+    try {
+      const next = await new PremiumMailSettings(client).setSiteLinks(item.anonymousId, hosts);
+      setLinkedHosts(next); setWebsiteDraft('');
+      setLinkNotice(tr('Website associations saved on this device.', '网站关联已保存在此设备。'));
+    } catch { setLinkNotice(tr('Could not save this association. Your existing associations were not changed.', '无法保存此次关联，现有关联未被更改。')); }
+    finally { setLinkBusy(false); }
+  };
+  const linkWebsite = () => {
+    const hostname = normalizeHmeHost(websiteDraft);
+    if (!hostname) { setLinkNotice(tr('Enter a valid website domain, such as example.com.', '请输入有效网站域名，例如 example.com。')); return; }
+    void saveLinks([...new Set([...linkedHosts, hostname])]);
+  };
+
+  const fillAddress = async () => {
+    if (IS_MANAGER) return;
+    setError(undefined);
+    try {
+      await sendMessageToTab(MessageType.Autofill, item.hme);
+      setMetadataMessage(tr('Address sent to the page. If the field is unchanged, select it and retry.', '地址已发送到网页。如输入框未变化，请先点击输入框再重试。'));
+    } catch { setError(tr('This page could not be autofilled. Copy the address and paste it manually.', '无法在此页面自动填充。请复制地址并手动粘贴。')); }
+  };
 
   useEffect(() => {
     setItem(hme);
+    document.querySelector<HTMLElement>('.hme-content')?.scrollTo(0, 0);
     setDraftLabel(hme.label || '');
     setDraftNote(hme.note || '');
     setEditingMetadata(false);
@@ -1770,9 +1992,11 @@ const DetailsView = ({
   }, [hme.anonymousId]);
 
   const copy = async () => {
-    await navigator.clipboard.writeText(item.hme);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1300);
+    try {
+      await navigator.clipboard.writeText(item.hme);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1300);
+    } catch { setError(tr('Could not copy the address. Please retry.', '无法复制地址，请重试。')); }
   };
 
   const beginMetadataEdit = () => {
@@ -1917,10 +2141,14 @@ const DetailsView = ({
 
       <section className="hme-detail-hero">
         <SiteIcon domain={item.domain} label={item.label} note={item.note} large inactive={!item.isActive} />
-        <span className="hme-overline">{tr('Private Address', '隐藏地址')}</span>
+        <span className="hme-overline">{item.label || tr('Private Address', '隐藏地址')}</span>
         <h2 title={item.hme}>{item.hme}</h2>
-        <button type="button" className="hme-pill-button" onClick={copy}><Symbol name={copied ? 'check' : 'copy'} size={15} />{copied ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>
+        <div className="hme-detail-primary-actions"><button type="button" className="hme-pill-button" onClick={copy}><Symbol name={copied ? 'check' : 'copy'} size={15} />{copied ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>
+          {!IS_MANAGER && <button type="button" className="hme-pill-button is-primary" disabled={!item.isActive} onClick={() => void fillAddress()}><Symbol name="autofill" size={15} />{tr('Fill on Page', '填充网页')}</button>}
+        </div>
       </section>
+
+      {error && <ErrorBanner>{error}</ErrorBanner>}
 
       <div className="hme-section-label hme-detail-section-heading">
         <span>{tr('Details', '详情')}</span>
@@ -1989,6 +2217,15 @@ const DetailsView = ({
 
       {metadataMessage && <div className="hme-metadata-message" role="status"><Symbol name="check" size={13} />{metadataMessage}</div>}
 
+      <div className="hme-section-label">{tr('Associated Websites', '关联的网站')}</div>
+      <section className="hme-group hme-site-links">
+        <p>{tr('Prioritize this address on these exact websites. Saved only on this device, separately for each iCloud account.', '在这些网站优先推荐此地址。关联按 iCloud 账号区分，仅保存在此设备，不会修改 iCloud 标签。')}</p>
+        {!!linkedHosts.length && <ul>{linkedHosts.map((hostname) => <li key={hostname}><span>{hostname}</span><button type="button" disabled={linkBusy} onClick={() => void saveLinks(linkedHosts.filter((value) => value !== hostname))} aria-label={`${tr('Remove association for', '移除关联：')} ${hostname}`}><Symbol name="close" size={13} /></button></li>)}</ul>}
+        {!IS_MANAGER && currentHost && !linkedHosts.includes(currentHost) && <button type="button" className="hme-current-site-link" disabled={linkBusy || !linksLoaded} onClick={() => void saveLinks([...linkedHosts, currentHost])}><Symbol name="globe" size={14} /><span>{tr('Associate Current Website', '关联当前网站')}<small>{currentHost}</small></span></button>}
+        <form onSubmit={(event) => { event.preventDefault(); linkWebsite(); }}><input aria-label={tr('Website domain to associate', '要关联的网站域名')} type="text" placeholder="example.com" value={websiteDraft} disabled={linkBusy || !linksLoaded} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => setWebsiteDraft(event.target.value)} /><button type="submit" disabled={linkBusy || !linksLoaded || !websiteDraft.trim()}>{tr('Add', '添加')}</button></form>
+        {linkNotice && <p role="status">{linkNotice}</p>}
+      </section>
+
       <div className="hme-section-label hme-mail-section-heading">
         <span>{tr('Recent Mail', '近期邮件')}</span>
         {mailStatus !== 'idle' && (
@@ -2054,15 +2291,8 @@ const DetailsView = ({
         </section>
       )}
 
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-
       <div className="hme-section-label">{tr('Actions', '操作')}</div>
       <section className="hme-group hme-action-group">
-        <button type="button" disabled={!item.isActive} onClick={() => sendMessageToTab(MessageType.Autofill, item.hme).catch(() => setError(tr('This page could not be autofilled. Copy the address and paste it manually.', '无法在此页面自动填充。请复制地址并手动粘贴。')))}>
-          <span className="hme-symbol-tile is-blue"><Symbol name="autofill" size={18} /></span>
-          <span>{tr('Autofill on This Page', '在此页面自动填充')}</span>
-          <Symbol name="chevron-right" size={15} className="hme-chevron" />
-        </button>
         <button type="button" disabled={!!busy} onClick={toggle}>
           <span className="hme-symbol-tile is-orange">{busy === 'activation' ? <Spinner compact /> : <Symbol name={item.isActive ? 'pause' : 'refresh'} size={18} />}</span>
           <span>{item.isActive ? tr('Deactivate Address', '停用地址') : tr('Reactivate Address', '重新启用地址')}</span>
@@ -2097,7 +2327,7 @@ const performDeauthSideEffects = async () => {
 };
 
 const Popup = () => {
-  const [appSection, setAppSection] = useState<AppSection>('passwords');
+  const [appSection, setAppSection] = useState<AppSection>(IS_MANAGER ? 'hide-email' : 'passwords');
   const [storedPopupState, setStoredPopupState, isPopupStateLoading] = useBrowserStorageState(
     'popupState',
     PopupState.SignedOut
@@ -2107,9 +2337,12 @@ const Popup = () => {
     undefined
   );
   const [view, setView] = useState<View>(
-    storedPopupState === PopupState.AuthenticatedAndManaging ? 'manage' : 'generate'
+    IS_MANAGER || storedPopupState === PopupState.AuthenticatedAndManaging ? 'manage' : 'generate'
   );
   const [selected, setSelected] = useState<HmeWithActivity>();
+  const [selectedAccountKey, setSelectedAccountKey] = useState('');
+  const activeAccountKey = clientState ? hmeListCacheKey(clientState) : '';
+  const previousAccountKey = useRef(activeAccountKey);
   const [refreshKey, setRefreshKey] = useState(0);
   const [viewInitialized, setViewInitialized] = useState(false);
   const [isHmeDiscovering, setIsHmeDiscovering] = useState(false);
@@ -2123,9 +2356,23 @@ const Popup = () => {
   );
 
   useEffect(() => {
+    if (previousAccountKey.current === activeAccountKey) return;
+    const wasConnected = !!previousAccountKey.current;
+    previousAccountKey.current = activeAccountKey;
+    setSelected(undefined);
+    setSelectedAccountKey('');
+    if (wasConnected) setView('manage');
+  }, [activeAccountKey]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('hme-manager-page', IS_MANAGER);
+    if (IS_MANAGER) document.title = tr('Hide My Email — Address Manager', '隐藏邮件地址 — 地址管理');
+  }, []);
+
+  useEffect(() => {
     if (!isPopupStateLoading && !viewInitialized) {
       setView(
-        storedPopupState === PopupState.AuthenticatedAndManaging ? 'manage' : 'generate'
+        IS_MANAGER || storedPopupState === PopupState.AuthenticatedAndManaging ? 'manage' : 'generate'
       );
       setViewInitialized(true);
     }
@@ -2374,19 +2621,19 @@ const Popup = () => {
         : tr('iCloud+ Hide My Email', 'iCloud+ 隐藏邮件地址');
 
   return (
-    <div className="hme-popup-shell unified-shell">
+    <div className={cx('hme-popup-shell unified-shell', IS_MANAGER && 'hme-manager-shell')}>
       <Header
         subtitle={headerSubtitle}
         authenticated={appSection === 'hide-email' && !!clientState}
         onSignOut={appSection === 'hide-email' && clientState ? signOutHme : undefined}
       />
 
-      <AppSegmentedControl
+      {!IS_MANAGER && <AppSegmentedControl
         value={appSection}
         onChange={(next) => {
           setAppSection(next);
         }}
-      />
+      />}
 
       {appSection === 'hide-email' && clientState && view !== 'details' && (
         <HmeSegmentedControl value={view} onChange={navigateHme} />
@@ -2399,7 +2646,7 @@ const Popup = () => {
           <div className="hme-view-body unified-center compact-state">
             <Spinner />
             <h2>{tr('Checking iCloud…', '正在检查 iCloud…')}</h2>
-            <p>{tr('Password features stay available while Hide My Email reconnects.', '隐藏邮件地址重新连接期间，密码功能仍可继续使用。')}</p>
+            <p>{IS_MANAGER ? tr('Connecting to your iCloud address manager…', '正在连接 iCloud 地址管理器…') : tr('Password features stay available while Hide My Email reconnects.', '隐藏邮件地址重新连接期间，密码功能仍可继续使用。')}</p>
           </div>
         )}
 
@@ -2415,24 +2662,27 @@ const Popup = () => {
         )}
 
         {appSection === 'hide-email' && !hmeLoading && hmeClient && view === 'generate' && (
-          <GenerateView client={hmeClient} onCreated={() => {
+          <GenerateView key={activeAccountKey} client={hmeClient} onCreated={() => {
             setRefreshKey((key) => key + 1);
           }} />
         )}
 
         {appSection === 'hide-email' && !hmeLoading && hmeClient && view === 'manage' && (
           <ManageView
+            key={activeAccountKey}
             client={hmeClient}
             refreshKey={refreshKey}
             onSelect={(hme) => {
               setSelected(hme);
+              setSelectedAccountKey(activeAccountKey);
               setView('details');
             }}
           />
         )}
 
-        {appSection === 'hide-email' && !hmeLoading && hmeClient && view === 'details' && selected && (
+        {appSection === 'hide-email' && !hmeLoading && hmeClient && view === 'details' && selected && selectedAccountKey === activeAccountKey && (
           <DetailsView
+            key={`${activeAccountKey}:${selected.anonymousId}`}
             client={hmeClient}
             hme={selected}
             onBack={() => setView('manage')}
@@ -2447,6 +2697,7 @@ const Popup = () => {
             }}
           />
         )}
+        <SiteTools onPasswords={() => setAppSection('passwords')} onHideEmail={() => { setAppSection('hide-email'); setHmeDiscoveryDone(false); setHmeDiscoveryRetry((value) => value + 1); }} />
       </main>
     </div>
   );

@@ -12,6 +12,35 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm install
+      - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: node utils/check-release.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apple-all-in-one-validated-build
+          path: build/
+          if-no-files-found: error
+          retention-days: 14
+
+  extension-context:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@v4
+        with:
+          name: apple-all-in-one-validated-build
+          path: build/
+      - name: Install isolated, pinned browser test runtime
+        run: |
+          npm install --prefix "$RUNNER_TEMP/apple-browser-smoke" --no-package-lock playwright@1.63.0
+          "$RUNNER_TEMP/apple-browser-smoke/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Exercise real extension context using synthetic native data
+        env:
+          APPLE_CI_PLAYWRIGHT_DIR: ${{ runner.temp }}/apple-browser-smoke
+        run: xvfb-run --auto-servernum node tests/extension-context-smoke.mjs

@@ -10,8 +10,9 @@ import { ApplePasswords } from '../src/passwords/core/protocol.js';
 const readProjectFile = (path) =>
   readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
-test('background bootstrap repairs both password and Hide My Email scripts in existing tabs', async () => {
+test('background bootstrap repairs existing tabs on install, not every worker wake', async () => {
   const injectedFiles = [];
+  let installed;
   const event = () => ({ addListener() {} });
   const sandbox = {
     chrome: {
@@ -20,11 +21,11 @@ test('background bootstrap repairs both password and Hide My Email scripts in ex
         setPopup: async () => {},
       },
       runtime: {
-        onInstalled: event(),
+        onInstalled: { addListener(listener) { installed = listener; } },
         onStartup: event(),
       },
       tabs: {
-        query: async () => [{ id: 42 }],
+        query: async () => [{ id: 42, url: 'https://example.test/login' }],
         onCreated: event(),
         onUpdated: event(),
         onActivated: event(),
@@ -39,6 +40,9 @@ test('background bootstrap repairs both password and Hide My Email scripts in ex
   };
 
   vm.runInNewContext(readProjectFile('src/background-bootstrap.js'), sandbox);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(injectedFiles, []);
+  installed({ reason: 'update' });
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.ok(injectedFiles.includes('passwordsContent.bundle.js'));
@@ -155,7 +159,7 @@ test('popup saved-login clicks fill the page and open a popup-only secret detail
   );
   assert.match(
     background,
-    /const chosen = selectAccountCode\(items, msg\.username\)/
+    /const chosen = selectAccountCode\(items, msg\.username, host\)/
   );
 });
 
@@ -164,11 +168,11 @@ test('standalone verification-code clicks fill and reveal from one secret read',
   const background = readProjectFile('src/passwords/core/background.js');
 
   assert.match(popup, /fillAndShowOtp/);
-  assert.match(popup, /same Touch ID-authorized action used to fill the page/);
+  assert.match(popup, /Codes are read from Apple on request and cleared when this popup closes/);
   assert.match(background, /case "fillOtpOnPage"[\s\S]*const detail = \{[\s\S]*code: String\(chosen\.code\)[\s\S]*detail,/);
   assert.match(
     background,
-    /const chosen = selectAccountCode\(items, msg\.username\)/
+    /const chosen = selectAccountCode\(items, msg\.username, host\)/
   );
   assert.doesNotMatch(popup, /fillAndShowOtp[\s\S]{0,900}window\.close\(\)/);
 });

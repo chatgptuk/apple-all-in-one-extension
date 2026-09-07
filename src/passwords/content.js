@@ -1,6 +1,8 @@
 import { formScope, passwordRole, generatedPasswordTargets } from './form-context.js';
 import { positivePasswordLength, passwordHints } from './password-rules.js';
 import { randomToken } from './random-token.js';
+import { failureReason, failureMessage, validContentFillRequest } from './message-contracts.js';
+import { SITE_PREFERENCES_KEY, sitePreferencesFor } from './site-preferences.js';
 
 (() => {
 const CONTENT_BUILD_ID = chrome.runtime.getManifest().version;
@@ -73,6 +75,7 @@ let lastAutofill = null;
 let lastGenerated = null;
 let lastSaveKey = '';
 let lastSaveAt = 0;
+let lastSaveTarget = null;
 let lastGesture = { at: 0, kind: '', target: null };
 let offerSeq = 0;
 let aliasLookupSeq = 0;
@@ -92,6 +95,110 @@ let extensionContextInvalidated = false;
 const documentToken = randomToken();
 let pendingFill = null;
 let signupInFlight = false;
+let sitePreferences = sitePreferencesFor(undefined, location.hostname);
+let sitePreferencesRevision = 0;
+let secretCleanupTimer = null;
+let saveNotice = null;
+let saveNoticeTimer = null;
+let pageInactive = false;
+
+function applySitePreferences(stored) {
+  const next = sitePreferencesFor(stored, location.hostname.toLowerCase());
+  if (next.suggestions !== sitePreferences.suggestions || next.privateSignup !== sitePreferences.privateSignup) {
+    sitePreferences = next;
+    offerSeq += 1;
+    aliasLookupSeq += 1;
+    closeUi();
+  }
+}
+
+const sitePreferencesReady = new Promise((resolve) => {
+  const revision = sitePreferencesRevision;
+  try {
+    chrome.storage.local.get(SITE_PREFERENCES_KEY, (stored) => {
+      if (chrome.runtime.lastError) sitePreferences = { suggestions: 'manual', privateSignup: false };
+      else if (revision === sitePreferencesRevision) applySitePreferences(stored?.[SITE_PREFERENCES_KEY]);
+      resolve();
+    });
+  } catch { sitePreferences = { suggestions: 'manual', privateSignup: false }; resolve(); }
+});
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[SITE_PREFERENCES_KEY]) return;
+    sitePreferencesRevision += 1;
+    applySitePreferences(changes[SITE_PREFERENCES_KEY].newValue);
+  });
+} catch {}
+
+function scheduleSecretCleanup() {
+  if (secretCleanupTimer !== null) clearTimeout(secretCleanupTimer);
+  secretCleanupTimer = null;
+  const now = Date.now();
+  if (lastAutofill && now - lastAutofill.at >= 300_000) lastAutofill = null;
+  if (lastGenerated && now - lastGenerated.at >= 600_000) lastGenerated = null;
+  if (pendingFill && now - pendingFill.at >= 90_000) pendingFill = null;
+  if (lastSaveKey && now - lastSaveAt >= 15_000) { lastSaveKey = ''; lastSaveTarget = null; lastSaveAt = 0; }
+  const deadlines = [lastAutofill && lastAutofill.at + 300_000, lastGenerated && lastGenerated.at + 600_000,
+    pendingFill && pendingFill.at + 90_000, lastSaveKey && lastSaveAt + 15_000].filter((value) => typeof value === 'number');
+  if (deadlines.length) secretCleanupTimer = setTimeout(scheduleSecretCleanup, Math.max(1, Math.min(...deadlines) - now));
+}
+
+function clearPageSecrets() {
+  lastAutofill = null;
+  lastGenerated = null;
+  pendingFill = null;
+  lastSaveKey = '';
+  lastSaveTarget = null;
+  lastSaveAt = 0;
+  fillAnchor = null;
+  if (secretCleanupTimer !== null) clearTimeout(secretCleanupTimer);
+  secretCleanupTimer = null;
+  if (saveNoticeTimer !== null) clearTimeout(saveNoticeTimer);
+  saveNoticeTimer = null;
+  saveNotice?.remove();
+  saveNotice = null;
+}
+
+function safeFailureMessage(result) {
+  return failureMessage(failureReason(result), appResolvedLanguage() === 'zh-CN');
+}
+
+function loginMetadata(login) {
+  return { username: typeof login?.username === 'string' ? login.username : '',
+    sourceWebsite: typeof login?.sourceWebsite === 'string' ? login.sourceWebsite : '',
+    match: ['exact', 'related'].includes(login?.match) ? login.match : 'unknown',
+    ambiguous: login?.ambiguous === true };
+}
+
+function saveStatusMessage(status) {
+  if (status === 'waiting_unlock') return L('Unlock Apple Passwords to continue saving. The pending request expires in five minutes.', '请解锁 Apple 密码以继续保存，待处理请求将在五分钟内过期。');
+  if (status === 'submitted') return L('Sent to Apple Passwords. Confirm the save in Apple’s dialog.', '已发送至 Apple 密码，请在 Apple 的对话框中确认保存。');
+  if (status === 'failed') return L('The save request did not complete. Check Apple Passwords before leaving this page.', '保存请求未完成，离开此页面前请检查 Apple 密码。');
+  if (status === 'expired') return L('The pending save expired. Submit the form again if you still want to save it.', '待保存请求已过期，如仍需保存，请重新提交表单。');
+  return '';
+}
+
+function showSaveNotice(status) {
+  const message = saveStatusMessage(status);
+  if (!message || extensionContextInvalidated || pageInactive) return;
+  saveNotice?.remove();
+  if (saveNoticeTimer !== null) clearTimeout(saveNoticeTimer);
+  const host = document.createElement('div');
+  host.setAttribute('data-apple-password-save-status', status);
+  host.style.cssText = 'all:initial!important;position:fixed!important;inset:auto 16px 16px auto!important;z-index:2147483647!important;pointer-events:none!important;';
+  const shadow = host.attachShadow({ mode: 'closed' });
+  const style = document.createElement('style');
+  style.textContent = ':host{color-scheme:light dark}.notice{box-sizing:border-box;max-width:min(360px,calc(100vw - 32px));padding:12px 16px;border:1px solid GrayText;border-radius:12px;background:Canvas;color:CanvasText;font:400 13px/1.45 system-ui,-apple-system,sans-serif;font-optical-sizing:auto;}';
+  const notice = document.createElement('div');
+  notice.className = 'notice';
+  notice.setAttribute('role', 'status');
+  notice.setAttribute('aria-live', 'polite');
+  notice.textContent = message;
+  shadow.append(style, notice);
+  (document.documentElement || document.body).appendChild(host);
+  saveNotice = host;
+  saveNoticeTimer = setTimeout(() => { host.remove(); if (saveNotice === host) saveNotice = null; saveNoticeTimer = null; }, 6500);
+}
 
 function isExtensionContextError(error) {
   return /Extension context invalidated/i.test(String(error?.message ?? error ?? ''));
@@ -102,6 +209,7 @@ function stopInvalidatedContentScript() {
   extensionContextInvalidated = true;
   offerSeq += 1;
   aliasLookupSeq += 1;
+  clearPageSecrets();
   try { closeUi(); } catch {}
 }
 
@@ -475,6 +583,7 @@ function fillGeneratedPassword(field, password) {
     everPassword.add(t);
   }
   lastGenerated = { host: location.hostname, password, at: Date.now() };
+  scheduleSecretCleanup();
   return true;
 }
 
@@ -524,17 +633,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: false, filled: false, error: 'forbidden' });
     return true;
   }
+  if (!validContentFillRequest(msg)) {
+    sendResponse({ ok: false, filled: false, reason: 'invalid_request' });
+    return true;
+  }
   if ((msg.expectedOrigin && location.origin !== msg.expectedOrigin) || (msg.expectedHref && location.href !== msg.expectedHref) || (msg.expectedHost && location.hostname.toLowerCase() !== msg.expectedHost)) {
     sendResponse({ ok: false, filled: false, error: 'origin mismatch' });
     return true;
   }
   if (msg.type === 'prepareFill') {
+    if (msg.expectedDocumentToken !== undefined && msg.expectedDocumentToken !== documentToken) {
+      sendResponse({ ok: false, filled: false, reason: 'target_changed', error: 'The sign-in document changed.' });
+      return true;
+    }
     const active = deepActiveElement();
     const anchor = uiAnchor || (active instanceof HTMLInputElement && isFillable(active) ? active : null) ||
       (fillAnchor?.isConnected && isFillable(fillAnchor) ? fillAnchor : null) || firstVisibleOtpField() ||
       Array.from(document.querySelectorAll('input')).find((field) => isFillable(field) && (isUsernameField(field) || isPasswordField(field))) || null;
     pendingFill = { token: randomToken(), anchor, value: anchor?.value, href: location.href, at: Date.now() };
-    sendResponse({ ok: true, documentToken, targetToken: pendingFill.token });
+    scheduleSecretCleanup();
+    sendResponse({ ok: true, documentToken, targetToken: pendingFill.token, href: pendingFill.href });
     return true;
   }
   const target = pendingFill;
@@ -544,6 +662,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   pendingFill = null;
+  scheduleSecretCleanup();
   if (msg.type === 'fillOtp') {
     const anchor = target.anchor && isOtpField(target.anchor) ? target.anchor : null;
     const filled = fillOneTimeCode(msg.code, anchor);
@@ -552,6 +671,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   const filled = !!target.anchor && fillCredentials(msg.username, msg.password, target.anchor);
   if (filled) lastAutofill = { host: location.hostname, username: msg.username, password: msg.password, at: Date.now() };
+  scheduleSecretCleanup();
   sendResponse({ ok: true, filled, reason: filled ? undefined : 'no_login_field' });
   return true;
 });
@@ -664,6 +784,7 @@ function positionUi(height = uiExpectedRect?.height || UI_DEFAULT_HEIGHT) {
 
 function closeUi() {
   pendingFill = null;
+  scheduleSecretCleanup();
   aliasLookupSeq += 1;
   if (uiAuthTimer) clearTimeout(uiAuthTimer);
   uiAuthTimer = null;
@@ -717,19 +838,24 @@ function postUi(message) {
 }
 
 async function refreshExistingHme(anchor, token) {
+  await sitePreferencesReady;
+  if (!sitePreferences.privateSignup || sitePreferences.suggestions === 'manual' || extensionContextInvalidated || pageInactive) return;
   const hme = await sendRuntimeMessage({ type: 'hme:inline-state', wantAlias: true })
     .catch(() => null);
-  if (token !== aliasLookupSeq || uiAnchor !== anchor || !uiState || isOtpField(anchor)) return;
+  if (token !== aliasLookupSeq || uiAnchor !== anchor || !uiState || isOtpField(anchor) || !sitePreferences.privateSignup) return;
   if (uiState.logins?.length) return;
   uiState = {
     ...uiState,
     canSmartSignup: isHideEmailField(anchor) && isSignupContext(anchor) && !!hme?.ready,
     existingHme: hme?.existingHme || null,
+    existingHmes: Array.isArray(hme?.existingHmes) ? hme.existingHmes : [],
   };
   postUi(uiState);
 }
 
 async function reloadUiState() {
+  await sitePreferencesReady;
+  if (sitePreferences.suggestions === 'manual' || extensionContextInvalidated || pageInactive) { closeUi(); return; }
   const anchor = uiAnchor;
   if (!anchor) return;
   if (isOtpField(anchor)) {
@@ -753,14 +879,14 @@ async function reloadUiState() {
       canUnlock: window === window.top,
     };
   } else {
-    const wantsAlias = isHideEmailField(anchor);
+    const wantsAlias = sitePreferences.privateSignup && isHideEmailField(anchor);
     const [res, hme] = await Promise.all([
       sendRuntimeMessage({ type: 'inlineLogins' }).catch(() => null),
       // This is storage-only. Existing-alias discovery is a separate, non-blocking request below.
-      sendRuntimeMessage({ type: 'hme:inline-state', wantAlias: false }).catch(() => null),
+      sitePreferences.privateSignup ? sendRuntimeMessage({ type: 'hme:inline-state', wantAlias: false }).catch(() => null) : Promise.resolve(null),
     ]);
     if (uiAnchor !== anchor) return;
-    const logins = res?.ok && !res.locked ? (res.logins || []).map((l) => ({ username: l.username || '' })) : [];
+    const logins = res?.ok && !res.locked ? (res.logins || []).map(loginMetadata) : [];
     const hasSavedLogins = logins.length > 0;
     uiState = {
       type: 'state',
@@ -776,13 +902,14 @@ async function reloadUiState() {
       canSmartSignup: !hasSavedLogins && wantsAlias && isSignupContext(anchor) && !!hme?.ready,
       hasAppleSignIn: !hasSavedLogins && !!appleSignInControl(),
       existingHme: null,
+      existingHmes: [],
       pendingPassword: preparedPasswordForThisSite(anchor),
       passwordRequirements: passwordRequirementsFor(anchor),
       canUnlock: window === window.top,
     };
   }
   postUi(uiState);
-  if (!isOtpField(anchor) && isHideEmailField(anchor) && !uiState.logins?.length) {
+  if (sitePreferences.privateSignup && !isOtpField(anchor) && isHideEmailField(anchor) && !uiState.logins?.length) {
     const token = ++aliasLookupSeq;
     refreshExistingHme(anchor, token).catch(() => {});
   }
@@ -808,13 +935,11 @@ async function handleUiAction(msg) {
     if (!isOtpField(uiAnchor)) return;
     fillAnchor = uiAnchor;
     const username = typeof msg.username === 'string' ? msg.username : '';
-    const res = await sendRuntimeMessage({ type: 'inlineFillOtp', username }).catch((e) => ({ ok: false, error: String(e) }));
+    const res = await sendRuntimeMessage({ type: 'inlineFillOtp', username, documentToken }).catch((e) => ({ ok: false, error: String(e) }));
     if (res?.filled) closeUi();
     else postUi({
       type: 'error',
-      message: res?.reason === 'no_otp_field'
-        ? L('No verification-code field was found in this sign-in step.', '当前登录步骤中没有找到验证码输入框。')
-        : (res?.error || L('Could not fill this verification code.', '无法填充此验证码。')),
+      message: safeFailureMessage(res),
     });
     return;
   }
@@ -822,13 +947,11 @@ async function handleUiAction(msg) {
   if (msg.type === 'fill-login') {
     const username = typeof msg.username === 'string' ? msg.username : '';
     fillAnchor = uiAnchor;
-    const res = await sendRuntimeMessage({ type: 'inlineFill', loginName: { username } }).catch((e) => ({ ok: false, error: String(e) }));
+    const res = await sendRuntimeMessage({ type: 'inlineFill', loginName: { username }, documentToken }).catch((e) => ({ ok: false, error: String(e) }));
     if (res?.filled) closeUi();
     else postUi({
       type: 'error',
-      message: res?.reason === 'no_login_field'
-        ? L('No compatible username or password field was found in this sign-in step.', '当前登录步骤中没有找到可填充的账号或密码输入框。')
-        : (res?.error || L('Could not fill this login.', '无法填充此登录信息。')),
+      message: safeFailureMessage(res),
     });
     return;
   }
@@ -847,6 +970,7 @@ async function handleUiAction(msg) {
   }
 
   if (msg.type === 'smart-signup') {
+    if (!sitePreferences.privateSignup || sitePreferences.suggestions === 'manual') return;
     if (!isHideEmailField(uiAnchor) || typeof msg.password !== 'string' || msg.password.length < 8) return;
     if (signupInFlight) {
       postUi({ type: 'error', message: L('A private signup request is already running.', '私密注册请求仍在处理中，请稍候。') });
@@ -888,7 +1012,7 @@ async function handleUiAction(msg) {
         return;
       }
       setValue(anchor, alias);
-      if (!passwordField) lastGenerated = { host: location.hostname, password: msg.password, at: Date.now(), pending: true };
+      if (!passwordField) { lastGenerated = { host: location.hostname, password: msg.password, at: Date.now(), pending: true }; scheduleSecretCleanup(); }
       anchor.focus();
       closeUi();
     } finally {
@@ -995,9 +1119,11 @@ window.addEventListener('message', (event) => {
 });
 
 async function openForField(field) {
+  await sitePreferencesReady;
+  if (sitePreferences.suggestions === 'manual' || extensionContextInvalidated || pageInactive) return;
   if (!(field instanceof HTMLInputElement) || !frameIsSafe()) return;
   const otp = isOtpField(field);
-  const signupField = isHideEmailField(field) && isSignupContext(field);
+  const signupField = sitePreferences.privateSignup && isHideEmailField(field) && isSignupContext(field);
   if (!otp && !isLoginField(field) && !signupField) return;
   const seq = ++offerSeq;
   const [res, hme] = otp
@@ -1005,11 +1131,11 @@ async function openForField(field) {
     : await Promise.all([
         sendRuntimeMessage({ type: 'inlineLogins' }).catch(() => null),
         // Keep the password lookup independent from the potentially slow iCloud alias list.
-        sendRuntimeMessage({ type: 'hme:inline-state', wantAlias: false }).catch(() => null),
+        sitePreferences.privateSignup ? sendRuntimeMessage({ type: 'hme:inline-state', wantAlias: false }).catch(() => null) : Promise.resolve(null),
       ]);
   if (seq !== offerSeq || field !== deepActiveElement()) return;
   const logins = !otp && res?.ok && !res.locked
-    ? (res.logins || []).map((l) => ({ username: l.username || '' }))
+    ? (res.logins || []).map(loginMetadata)
     : [];
   const hasSavedLogins = logins.length > 0;
   const state = otp ? {
@@ -1037,9 +1163,10 @@ async function openForField(field) {
       ? L('Apple Passwords lookup failed. Click the field again to retry.', 'Apple 密码查询失败，请再次点击输入框重试。')
       : '',
     canGenerate: !hasSavedLogins && isNewPasswordField(field),
-    canSmartSignup: !hasSavedLogins && isHideEmailField(field) && isSignupContext(field) && !!hme?.ready,
+    canSmartSignup: sitePreferences.privateSignup && !hasSavedLogins && isHideEmailField(field) && isSignupContext(field) && !!hme?.ready,
     hasAppleSignIn: !hasSavedLogins && !!appleSignInControl(),
     existingHme: null,
+    existingHmes: [],
     pendingPassword: preparedPasswordForThisSite(field),
     passwordRequirements: passwordRequirementsFor(field),
     canUnlock: window === window.top,
@@ -1047,7 +1174,7 @@ async function openForField(field) {
   const hasItems = otp ? state.otpItems.length > 0 : state.logins.length > 0;
   if (!state.locked && !hasItems && !state.lookupError && !state.canGenerate && !state.canSmartSignup && !state.hasAppleSignIn) return;
   buildSecureUi(field, state);
-  if (!otp && !hasSavedLogins && isHideEmailField(field) && hme?.ready) {
+  if (sitePreferences.privateSignup && !otp && !hasSavedLogins && isHideEmailField(field) && hme?.ready) {
     const token = ++aliasLookupSeq;
     refreshExistingHme(field, token).catch(() => {});
   }
@@ -1092,7 +1219,14 @@ function openInitiallyFocusedOtp() {
 // would reach our listener. Re-check the active element once after installation and again on
 // pageshow (BFCache/back-forward restores can preserve focus as well).
 setTimeout(openInitiallyFocusedOtp, 0);
-window.addEventListener('pageshow', () => setTimeout(openInitiallyFocusedOtp, 0));
+window.addEventListener('pageshow', () => { pageInactive = false; setTimeout(openInitiallyFocusedOtp, 0); });
+window.addEventListener('pagehide', () => {
+  pageInactive = true;
+  offerSeq += 1;
+  aliasLookupSeq += 1;
+  clearPageSecrets();
+  closeUi();
+});
 
 document.addEventListener('pointerdown', (e) => {
   if (!uiHost) return;
@@ -1164,21 +1298,26 @@ async function maybeOfferSave(scope) {
   const generated = !!genPw && (cred.allPasswords || []).includes(genPw);
   const savePassword = generated ? genPw : cred.password;
   if (!generated && lastAutofill && lastAutofill.host === location.hostname && lastAutofill.password === cred.password && Date.now() - lastAutofill.at < 300000) return;
-  const key = `${location.hostname} ${cred.username || savePassword}`;
+  const key = JSON.stringify([location.hostname, cred.username || '']);
+  const target = anchorPwField(scope) || scope;
   const now = Date.now();
-  if (key === lastSaveKey && now - lastSaveAt < 15000) return;
+  if (key === lastSaveKey && target === lastSaveTarget && now - lastSaveAt < 15000) return;
   lastSaveKey = key;
+  lastSaveTarget = target;
   lastSaveAt = now;
+  scheduleSecretCleanup();
   const root = scope?.querySelectorAll ? scope : document;
   const pwInputs = Array.from(root.querySelectorAll('input')).filter(isPasswordish);
   const newPwCtx = generated || (cred.allPasswords || []).length >= 2 || pwInputs.some((p) => (p.getAttribute('autocomplete') || '').toLowerCase().includes('new-password'));
-  sendRuntimeMessage({
+  const result = await sendRuntimeMessage({
     type: 'resolveSave',
     username: cred.username,
     password: savePassword,
     generated,
     newPwCtx,
-  }).catch(() => {});
+  }).catch(() => ({ ok: false, status: 'failed' }));
+  if (['waiting_unlock', 'submitted', 'failed', 'expired'].includes(result?.status)) showSaveNotice(result.status);
+  else if (!result?.ok) showSaveNotice('failed');
 }
 
 document.addEventListener('submit', (e) => {

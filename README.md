@@ -11,7 +11,7 @@ An independent, open-source Chromium extension that brings Apple Passwords, pass
 
 This project is not endorsed by, sponsored by, authorized by, or affiliated with Apple Inc. Apple, iCloud, iCloud+, Apple Passwords, and related names are Apple trademarks used here only to describe compatibility and the services being accessed.
 
-**Current version:** 1.2.21<br>
+**Current version:** 1.3.0<br>
 **Repository:** https://github.com/chatgptuk/apple-all-in-one-extension
 
 ## Who this project is for
@@ -41,6 +41,10 @@ It is not currently suitable for Chrome Web Store submission, managed enterprise
 
 Clicking a saved login fills the current page and expands its details in the popup. The password remains masked until explicitly revealed. If the account has a verification code, **Show Code** is a separate action because macOS can require a separate Touch ID authorization for that native read. Clicking a standalone verification-code entry fills the page and expands the code details from the same authorized read, without requesting Touch ID twice for that action.
 
+**Details Only** opens either type of entry without changing the page; **Fill Again** remains available in details. Same-account, same-host password reads can reuse a memory-only cache for up to two idle minutes, with a five-minute maximum lifetime. Multiple different secrets for an indistinguishable account are not silently reduced to the first result.
+
+Save feedback distinguishes waiting for unlock, submitted to Apple, failed, and expired. A submitted request still needs confirmation in Apple's system sheet; the private native interface does not confirm the user's final save decision. Deferred saves expire after five minutes.
+
 ### iCloud+ Hide My Email
 
 - Creates, reserves, fills, searches, activates, deactivates, and deletes private addresses.
@@ -48,6 +52,9 @@ Clicking a saved login fills the current page and expands its details in the pop
 - Reuses the address list from a two-minute session cache; stale data is shown immediately while a silent refresh runs.
 - Supports direct deletion of active aliases by performing `deactivate → delete`.
 - Supports multi-select bulk deactivate/delete with retryable partial failures.
+- Filters by website and active/inactive status, sorts by label or date, and loads large lists progressively. Search covers the complete cached list; bulk selection explicitly states the number of matching addresses.
+- Opens a dedicated, wider **Address Manager** tab for browsing and editing addresses. It does not read passwords or fill a background webpage.
+- Lets you associate exact website hostnames with an address locally. Associations and list preferences are separated by iCloud account and do not modify Apple's website metadata.
 - Identifies associated websites and displays Chromium-resolved favicons with deterministic fallbacks.
 - Caches the last-received timestamp for 24 hours and allows a manual refresh.
 - Reads recent iCloud Mail previews only after the user clicks **Check**. Preview content stays in popup memory and is discarded when the popup closes.
@@ -62,6 +69,8 @@ Hide My Email uses the browser's existing signed-in iCloud.com session. The exte
 - When no saved login exists, **Private Signup** can reuse or explicitly create a Hide My Email address and prepare a strong password.
 - Can activate a detected Sign in with Apple control only after the user explicitly chooses it.
 - Keeps Hide My Email creation available from the editable-field context menu instead of duplicating it in every chooser.
+- Offers exact-site addresses before manually associated or related-site addresses, with a choice when multiple aliases match.
+- Allows inline suggestions or just private-signup suggestions to be paused per website; toolbar filling and the right-click menu remain available.
 
 No private address is created merely because an email field receives focus. The user must choose **Create Private Address**, review the candidate, and then choose **Use**.
 
@@ -105,8 +114,9 @@ npm run watch
 - Browser startup does not validate iCloud or start the Apple Passwords connection.
 - Each subsystem initializes only when the corresponding feature is opened or used.
 - The popup briefly retries background messages while Chromium wakes its Manifest V3 service worker.
-- The Apple Passwords six-digit pairing code belongs to the current native session. A keep-alive alarm can reduce service-worker interruptions, but it cannot guarantee that a real browser/native-session restart will remain unlocked.
+- The Apple Passwords six-digit pairing code belongs to the current native session. Its connected native-messaging port keeps the worker active; there is no perpetual polling alarm. This cannot guarantee that a real browser/native-session restart will remain unlocked.
 - Hide My Email can automatically re-check the existing trusted iCloud browser session. If Apple requires authentication or 2FA, the extension stops and sends the user to iCloud.com; it does not attempt to bypass that requirement.
+- **Website Settings & Status** shows the two subsystems separately and provides recovery actions and a diagnostic report containing only version, state, operation names, reason codes, and timestamps—not accounts, secrets, or page URLs. iCloud status reflects the locally known session, not a fresh server check.
 
 ## Language
 
@@ -161,7 +171,10 @@ See the [licensing map](./LICENSING.md), [Apache-2.0 license](./LICENSE), [MIT l
 ```bash
 npm run typecheck
 npm test
+npm run check:release
 npm run prettier:check
 ```
+
+CI also runs an extension-context browser smoke test with synthetic credentials and a fake native transport. Real macOS helper and Touch ID behavior must still be checked manually; see [validation notes](./tests/VALIDATION.md).
 
 The dependency set intentionally avoids `webpack-dev-server`, `sockjs`, and the deprecated `uuid@8` dependency chain that previously produced audit warnings.

@@ -1,11 +1,27 @@
-// owns the native connection + SRP session; alarm keep-alive holds the MV3 worker so the PIN isnt re-prompted every idle-out
+// Owns the native connection + SRP session. The connected native port keeps the MV3 worker alive.
 
 import { ApplePasswords, State } from "./protocol.js";
-import { orderLoginsForHost } from "./login-order.js";
+import { orderLoginsForHost, describeLoginCandidatesForHost } from "./login-order.js";
 import { createPasswordCache } from "./password-cache.js";
 import { accountKey, selectAccountCode } from './account-identity.js';
+import { createPendingSaveQueue } from './pending-saves.js';
+import { validPasswordRequest, failureReason, failureMessage, failureResult, normalizeSitePreferences } from '../message-contracts.js';
+import { SITE_PREFERENCES_KEY, sitePreferencesFor, validSiteHost } from '../site-preferences.js';
 
 const client = new ApplePasswords();
+const recentDiagnosticEvents = [];
+const saveStatusByTab = new Map();
+function recordDiagnostic(operation, reason) {
+  // Never retain URLs, account names, native payloads or exception messages.
+  const knownOperations = new Set(['inlineFill', 'inlineFillOtp', 'inlineLogins', 'inlineOtpItems', 'fillOnPage', 'fillOtpOnPage', 'getLogins', 'getOtpItems', 'getOtpForLoginDetails', 'refreshAndRefill', 'resolveSave']);
+  recentDiagnosticEvents.push({ operation: knownOperations.has(operation) ? operation : 'unknown', reason: failureReason({ reason }), at: Date.now() });
+  if (recentDiagnosticEvents.length > 20) recentDiagnosticEvents.shift();
+}
+function setSaveStatus(tabId, status) {
+  saveStatusByTab.set(tabId, { status, at: Date.now() });
+  while (saveStatusByTab.size > 32) saveStatusByTab.delete(saveStatusByTab.keys().next().value);
+  broadcast({ type: 'password-save-status', status });
+}
 
 client.onStateChange((s) => {
   // any state other than unlocked means the session/keys are gone - drop the plaintext cache
@@ -25,6 +41,7 @@ function recordMru(host, username) {
   const arr = (mruByHost.get(host) || []).filter((x) => x !== u);
   arr.unshift(u);
   mruByHost.set(host, arr.slice(0, 10));
+  while (mruByHost.size > 128) mruByHost.delete(mruByHost.keys().next().value);
 }
 function orderForHost(host, logins) {
   return orderLoginsForHost(host, logins, mruByHost.get(host) || []);
@@ -45,30 +62,38 @@ function pickSaveTarget({ host, existing, detected, generated, newPwCtx }) {
 }
 
 // new-password saves that arrived while locked; a reset can navigate away, so stash and flush on unlock
-const pendingSaves = [];
+const pendingSaves = createPendingSaveQueue({ onDiscard: (metadata, reason) => {
+  if (reason === 'expired' || reason === 'evicted') setSaveStatus(metadata.tabId, 'expired');
+} });
 function queuePendingSave(save) {
-  const k = JSON.stringify([save.host, accountKey(save.detected)]);
-  const i = pendingSaves.findIndex((p) => JSON.stringify([p.host, accountKey(p.detected)]) === k);
-  if (i >= 0) pendingSaves.splice(i, 1); // newest wins
-  pendingSaves.push(save);
-  while (pendingSaves.length > 10) pendingSaves.shift();
+  pendingSaves.enqueue(save);
+  setSaveStatus(save.tabId, 'waiting_unlock');
 }
+let flushingPendingSaves = false;
 async function flushPendingSaves() {
-  if (!client.ready || !pendingSaves.length) return;
-  const batch = pendingSaves.splice(0);
-  for (const s of batch) {
+  if (flushingPendingSaves || !client.ready || !pendingSaves.size) return;
+  flushingPendingSaves = true;
+  try {
+  while (client.ready && pendingSaves.size) {
+    const s = pendingSaves.takeNext();
+    if (!s) break;
     try {
-      let existing = [];
-      try {
-        existing = (await client.getLoginNamesForURL(s.tabId, s.frameUrl))
-          .map((l) => l.username)
-          .filter(Boolean);
-      } catch {}
+      if (Date.now() >= s.expiresAt) { setSaveStatus(s.tabId, 'expired'); continue; }
+      const existing = (await client.getLoginNamesForURL(s.tabId, s.frameUrl)).map((l) => l.username).filter(Boolean);
+      if (Date.now() >= s.expiresAt) { setSaveStatus(s.tabId, 'expired'); continue; }
+      if (!client.ready) { pendingSaves.requeue(s); break; }
       const target = pickSaveTarget({ ...s, existing });
       if (target === null) continue;
       await client.saveLogin(s.tabId, s.frameUrl, target, s.password);
-    } catch {}
+      setSaveStatus(s.tabId, 'submitted');
+    } catch (error) {
+      setSaveStatus(s.tabId, 'failed');
+      recordDiagnostic('resolveSave', failureReason(error));
+      // Never silently replay a native save: the user may already have confirmed
+      // a system prompt even when its response was lost.
+    } finally { s.password = ''; }
   }
+  } finally { flushingPendingSaves = false; }
 }
 
 const normUsername = accountKey;
@@ -104,10 +129,11 @@ function pwCacheClear() {
 
 // stuck native call shouldnt leave a UI waiter (inline PIN box) hanging forever
 function withTimeout(promise, ms, label) {
+  let timer;
   return Promise.race([
     promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(label || "timed out")), ms)),
-  ]);
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(label || "timed out")), ms); }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 function isMissingReceiverError(error) {
@@ -138,21 +164,31 @@ async function sendToPasswordContent(tabId, message, frameId = 0, binding) {
   }
 }
 
-async function preparePasswordFill(tabId, url, frameId = 0, documentId) {
+async function preparePasswordFill(tabId, url, frameId = 0, documentId, requestDocumentToken) {
   const expectedOrigin = new URL(url).origin;
-  const target = await sendToPasswordContent(tabId, { type: 'prepareFill', expectedOrigin, expectedHref: new URL(url).href }, frameId);
-  if (!target?.ok || !target.documentToken || !target.targetToken) throw new Error('The sign-in page changed. Select the field again.');
-  return { expectedOrigin, expectedDocumentToken: target.documentToken, targetToken: target.targetToken, ...(documentId ? { documentId } : {}) };
+  // A content script's sender URL can predate an SPA's locale/route rewrite. Bind
+  // preparation to the requesting document, then snapshot its current same-origin
+  // URL. Only that exact URL/document/field may receive the secret after Touch ID.
+  const requestBinding = documentId || requestDocumentToken ? {
+    ...(documentId ? { documentId } : {}),
+    ...(requestDocumentToken ? { expectedDocumentToken: requestDocumentToken } : {}),
+  } : undefined;
+  const target = await sendToPasswordContent(tabId, { type: 'prepareFill', expectedOrigin }, frameId, requestBinding);
+  let currentUrl;
+  try { currentUrl = new URL(target?.href); } catch {}
+  if (!target?.ok || typeof target.documentToken !== 'string' || !target.documentToken ||
+      typeof target.targetToken !== 'string' || !target.targetToken ||
+      typeof target.href !== 'string' || currentUrl?.origin !== expectedOrigin ||
+      (requestDocumentToken && target.documentToken !== requestDocumentToken)) {
+    throw new Error('The sign-in page changed. Select the field again.');
+  }
+  return { expectedOrigin, expectedHref: target.href, expectedDocumentToken: target.documentToken, targetToken: target.targetToken, ...(documentId ? { documentId } : {}) };
 }
 
-// defeat the MV3 ~30s idle shutdown that kills the session
+// A connected native-messaging port already keeps Chrome's worker alive. Remove
+// the old perpetual 24-second development alarm; it is not valid in packaged builds.
 const KEEPALIVE_ALARM = "open-passwords-keepalive";
-chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 }); // ~24s
-chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name !== KEEPALIVE_ALARM) return;
-  // touching an extension API resets the idle timer
-  chrome.runtime.getPlatformInfo(() => void chrome.runtime.lastError);
-});
+chrome.alarms.clear(KEEPALIVE_ALARM).catch(() => {});
 
 async function ensureConnected() {
   if (client.state === State.Disconnected) {
@@ -192,13 +228,38 @@ suppressChromeAutofill();
 
 // only the extension's own popup may drive privileged actions (content messages carry sender.tab, the popup never does)
 function isFromOwnUi(sender) {
-  return sender.id === chrome.runtime.id && sender.tab === undefined;
+  if (sender.id !== chrome.runtime.id || sender.tab !== undefined) return false;
+  // The separate HME manager must never drive native password operations.
+  if (sender.url) {
+    try {
+      const url = new URL(sender.url);
+      const expected = new URL(chrome.runtime.getURL('popup.html'));
+      return url.protocol === expected.protocol && url.host === expected.host &&
+        url.pathname === '/popup.html' && url.searchParams.get('manager') !== '1';
+    } catch { return false; }
+  }
+  return true;
+}
+
+function isFromHmeManager(sender) {
+  if (sender.id !== chrome.runtime.id || !sender.url) return false;
+  try {
+    const url = new URL(sender.url);
+    const expected = new URL(chrome.runtime.getURL('popup.html'));
+    return url.protocol === expected.protocol && url.host === expected.host &&
+      url.pathname === '/popup.html' && url.searchParams.get('manager') === '1';
+  } catch { return false; }
 }
 
 // resolve from the real active tab, never from caller input
 async function activeTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab;
+}
+
+async function ensurePopupTarget(tab) {
+  const current = await activeTab();
+  if (current?.id !== tab.id || current?.url !== tab.url) throw new Error('The sign-in page changed. Select the field again.');
 }
 
 function registrableHost(u) {
@@ -237,7 +298,7 @@ export async function getCredentialForURLInternal(tabId, url) {
 
   let logins = [];
   try {
-    logins = uniqueByUsername(orderForHost(host, await client.getLoginNamesForURL(tabId, url)));
+    logins = uniqueByUsername(describeLoginCandidatesForHost(host, orderForHost(host, await client.getLoginNamesForURL(tabId, url))));
   } catch (e) {
     return { ok: false, reason: "lookup_failed", error: String(e?.message ?? e) };
   }
@@ -277,17 +338,58 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // messages to the HME listeners instead of replying from the Passwords security gate.
   if (typeof msg?.type === "string" && msg.type.startsWith("hme:")) return false;
   if (typeof msg?.type === "number") return false;
+  const reply = sendResponse;
+  sendResponse = (result) => {
+    if ((/Fill|fill|Logins|Otp|resolveSave/.test(msg?.type || '')) &&
+        (result?.error || result?.reason || result?.locked)) {
+      const reason = result.locked ? 'locked' : failureReason(result);
+      result = { ...result, reason, error: failureMessage(reason) };
+      recordDiagnostic(msg.type, reason);
+    }
+    reply(result);
+  };
   (async () => {
     try {
       // privileged actions are popup-only; content script gets the inline msgs only
       const fromUi = isFromOwnUi(sender);
-      const fromContent = sender.id === chrome.runtime.id && sender.tab !== undefined;
-      if (!fromUi && !(fromContent && CONTENT_ALLOWED.has(msg?.type))) {
+      const fromManager = isFromHmeManager(sender);
+      const fromContent = !fromManager && sender.id === chrome.runtime.id && sender.tab !== undefined;
+      if (!fromUi && !(fromManager && msg?.type === 'getDiagnostics') && !(fromContent && CONTENT_ALLOWED.has(msg?.type))) {
         sendResponse({ ok: false, error: "forbidden" });
         return;
       }
+      if (!validPasswordRequest(msg)) return sendResponse(failureResult({ reason: 'invalid_request' }));
 
       switch (msg?.type) {
+        case 'getSitePreferences':
+        case 'setSitePreferences': {
+          const tab = await activeTab();
+          const host = registrableHost(tab?.url);
+          if (!validSiteHost(host) || !/^https?:\/\//i.test(tab?.url || '')) return sendResponse({ ok: false, reason: 'unavailable' });
+          const stored = await chrome.storage.local.get(SITE_PREFERENCES_KEY);
+          const preferences = msg.type === 'setSitePreferences'
+            ? normalizeSitePreferences(msg.preferences)
+            : sitePreferencesFor(stored[SITE_PREFERENCES_KEY], host);
+          if (msg.type === 'setSitePreferences') {
+            const entries = Object.entries(stored[SITE_PREFERENCES_KEY] || {}).filter(([key]) => validSiteHost(key) && key !== host).slice(-199);
+            await chrome.storage.local.set({ [SITE_PREFERENCES_KEY]: Object.fromEntries([...entries, [host, preferences]]) });
+          }
+          sendResponse({ ok: true, host, preferences });
+          break;
+        }
+        case 'getDiagnostics': {
+          const tab = await activeTab();
+          const { clientState } = await chrome.storage.local.get('clientState');
+          const saved = saveStatusByTab.get(tab?.id);
+          sendResponse({ ok: true, report: {
+            version: chrome.runtime.getManifest().version,
+            passwordState: client.state,
+            icloudState: clientState ? 'signed_in' : 'signed_out',
+            recentEvents: recentDiagnosticEvents.slice(),
+            pendingSaveCount: pendingSaves.size,
+          }, saveStatus: saved && Date.now() - saved.at < 10 * 60_000 ? saved : undefined });
+          break;
+        }
         case "inlineLogins": {
           // login names only (no passwords) for the exact frame that asked, keyed to sender.url not the top tab
           const frameUrl = sender.url;
@@ -299,7 +401,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse({
               ok: true,
               locked: false,
-              logins: uniqueByUsername(orderForHost(registrableHost(frameUrl), logins)),
+              logins: uniqueByUsername(describeLoginCandidatesForHost(registrableHost(frameUrl), orderForHost(registrableHost(frameUrl), logins))),
             });
           } catch (e) {
             sendResponse({
@@ -350,16 +452,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!frameUrl || sender.tab?.id == null || frameId == null) {
             return sendResponse({ ok: false, error: "no frame" });
           }
+          if (typeof msg.documentToken !== 'string' || !msg.documentToken) {
+            return sendResponse({ ok: false, error: "Refresh this page and select the sign-in field again." });
+          }
           const host = registrableHost(frameUrl);
           if (!/^https:\/\//i.test(frameUrl) && !isLocalDevHost(host)) {
             return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS frame" });
           }
-          const binding = await preparePasswordFill(sender.tab.id, frameUrl, frameId, sender.documentId);
+          const binding = await preparePasswordFill(sender.tab.id, frameUrl, frameId, sender.documentId, msg.documentToken);
           await ensureConnected();
           if (!client.ready) return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
 
-          const items = await client.getOneTimeCodeForURL(sender.tab.id, frameUrl);
-          const chosen = selectAccountCode(items, msg.username);
+          const items = await client.getOneTimeCodeForURL(sender.tab.id, binding.expectedHref);
+          const chosen = selectAccountCode(items, msg.username, host);
           if (!chosen?.code) return sendResponse({ ok: false, filled: false, error: "No verification code is available for this website." });
 
           const resp = await sendToPasswordContent(
@@ -386,6 +491,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!frameUrl || sender.tab?.id == null || frameId == null) {
             return sendResponse({ ok: false, error: "no frame" });
           }
+          if (typeof msg.documentToken !== 'string' || !msg.documentToken) {
+            return sendResponse({ ok: false, error: "Refresh this page and select the sign-in field again." });
+          }
           const host = registrableHost(frameUrl);
           const isLocalDev =
             host === "localhost" ||
@@ -399,12 +507,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // ignore caller-supplied loginName.sites, query by frame's own host
           // (handled in protocol.js); pass only username through
           const safeLogin = { username: msg.loginName?.username };
-          const binding = await preparePasswordFill(sender.tab.id, frameUrl, frameId, sender.documentId);
+          const binding = await preparePasswordFill(sender.tab.id, frameUrl, frameId, sender.documentId, msg.documentToken);
           await ensureConnected();
           // cache hit skips the helper read and its Touch ID; miss reads then caches
           let cred = pwCacheGet(host, safeLogin.username);
           if (!cred) {
-            cred = await client.getPasswordForLoginName(sender.tab.id, frameUrl, safeLogin);
+            cred = await client.getPasswordForLoginName(sender.tab.id, binding.expectedHref, safeLogin);
             if (cred) pwCacheSet(host, cred);
           }
           let filled = false;
@@ -421,17 +529,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               binding,
             );
             filled = !!resp?.filled;
-            if (!filled && resp?.reason === "no_login_field") {
+            if (!filled) {
               return sendResponse({
                 ok: true,
                 filled: false,
-                reason: resp.reason,
-                error: "No compatible username or password field was found in this sign-in frame.",
+                reason: resp?.reason || 'unavailable',
               });
             }
             if (filled) {
               recordMru(host, cred.username);
               lastFillByTab.set(sender.tab.id, { host, username: cred.username });
+              while (lastFillByTab.size > 64) lastFillByTab.delete(lastFillByTab.keys().next().value);
             }
           }
           sendResponse({ ok: true, filled });
@@ -467,27 +575,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 newPwCtx,
               });
             }
-            return sendResponse({ ok: true, saved: false, locked: true });
+            return sendResponse({ ok: true, saved: false, locked: true, status: generated || newPwCtx ? 'waiting_unlock' : undefined });
           }
 
-          let existing = [];
-          try {
-            existing = (await client.getLoginNamesForURL(sender.tab.id, frameUrl))
+          const existing = (await client.getLoginNamesForURL(sender.tab.id, frameUrl))
               .map((l) => l.username)
               .filter(Boolean);
-          } catch {}
           const target = pickSaveTarget({ host, existing, detected, generated, newPwCtx });
-          console.debug("[Open Passwords] resolveSave", {
-            host,
-            detected: detected || "(none)",
-            generated,
-            newPwCtx,
-            existingCount: existing.length,
-            target: target === null ? "(skip)" : target || "(ask)",
-          });
           if (target === null) return sendResponse({ ok: true, saved: false, skipped: true });
           await client.saveLogin(sender.tab.id, frameUrl, target, msg.password);
-          sendResponse({ ok: true, saved: true });
+          setSaveStatus(sender.tab.id, 'submitted');
+          // Apple's save command does not acknowledge the final user decision.
+          sendResponse({ ok: true, saved: false, submitted: true, status: 'submitted' });
           break;
         }
 
@@ -524,11 +623,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!/^https:\/\//i.test(tab.url) && !isLocalDevHost(host)) {
             return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS page" });
           }
-          const binding = await preparePasswordFill(tab.id, tab.url);
+          const detailsOnly = msg.mode === 'details';
+          const binding = detailsOnly ? { expectedHref: tab.url } : await preparePasswordFill(tab.id, tab.url);
           await ensureConnected();
           if (!client.ready) return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
-          const items = await client.getOneTimeCodeForURL(tab.id, tab.url);
-          const chosen = selectAccountCode(items, msg.username);
+          const items = await client.getOneTimeCodeForURL(tab.id, binding.expectedHref);
+          const chosen = selectAccountCode(items, msg.username, host);
           if (!chosen?.code) return sendResponse({ ok: false, filled: false, error: "No verification code is available for this website." });
           const fetchedAt = Date.now();
           const detail = {
@@ -538,6 +638,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             fetchedAt,
             expiresAt: (Math.floor(fetchedAt / 30_000) + 1) * 30_000,
           };
+          await ensurePopupTarget(tab);
+          if (detailsOnly) return sendResponse({ ok: true, filled: false, detail });
           // Toolbar fill targets the top frame. Cross-origin embedded sign-in frames use the
           // inline chooser, which already knows the exact sender.frameId.
           let resp;
@@ -627,7 +729,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!client.ready) return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
           try {
             const logins = await client.getLoginNamesForURL(tab.id, tab.url);
-            sendResponse({ ok: true, logins: uniqueByUsername(orderForHost(registrableHost(tab.url), logins)) });
+            sendResponse({ ok: true, logins: uniqueByUsername(describeLoginCandidatesForHost(registrableHost(tab.url), orderForHost(registrableHost(tab.url), logins))) });
           } catch (e) {
             sendResponse({ ok: false, error: `Apple Passwords lookup failed: ${String(e?.message ?? e)}` });
           }
@@ -649,14 +751,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!/^https:\/\//i.test(tab.url) && !isLocalDev) {
             return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS page" });
           }
-          const binding = await preparePasswordFill(tab.id, tab.url);
+          const detailsOnly = msg.mode === 'details';
+          const binding = detailsOnly ? { expectedHref: tab.url } : await preparePasswordFill(tab.id, tab.url);
           await ensureConnected();
           if (!client.ready) {
             return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
           }
           let cred = pwCacheGet(host, msg.loginName?.username);
           if (!cred) {
-            cred = await client.getPasswordForLoginName(tab.id, tab.url, msg.loginName);
+            cred = await client.getPasswordForLoginName(tab.id, binding.expectedHref, msg.loginName);
             if (cred) pwCacheSet(host, cred);
           }
           const detail = cred
@@ -666,6 +769,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 website: host,
               }
             : undefined;
+          await ensurePopupTarget(tab);
+          if (detailsOnly) return sendResponse({ ok: !!detail, filled: false, detail, error: !detail ? 'Saved login unavailable' : undefined });
           let filled = false;
           if (cred) {
             // content script re-checks expectedHost before filling
@@ -676,18 +781,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               expectedHost: host,
             }, 0, binding);
             filled = !!resp?.filled;
-            if (!filled && resp?.reason === "no_login_field") {
+            if (!filled) {
               return sendResponse({
                 ok: true,
                 filled: false,
-                reason: resp.reason,
-                error: "No compatible username or password field was found on this page.",
+                reason: resp?.reason || 'unavailable',
                 detail,
               });
             }
             if (filled) {
               recordMru(host, cred.username);
               lastFillByTab.set(tab.id, { host, username: cred.username });
+              while (lastFillByTab.size > 64) lastFillByTab.delete(lastFillByTab.keys().next().value);
             }
           }
           sendResponse({
@@ -713,7 +818,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
           }
           const items = await client.getOneTimeCodeForURL(tab.id, tab.url);
-          const chosen = selectAccountCode(items, msg.username);
+          const chosen = selectAccountCode(items, msg.username, host);
+          await ensurePopupTarget(tab);
           const fetchedAt = Date.now();
           sendResponse({
             ok: true,
@@ -742,7 +848,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           try {
             const binding = await preparePasswordFill(tab.id, tab.url);
-            const cred = await client.getPasswordForLoginName(tab.id, tab.url, { username: entry.username });
+            const cred = await client.getPasswordForLoginName(tab.id, binding.expectedHref, { username: entry.username });
             if (!cred) return sendResponse({ ok: true, refilled: false });
             pwCacheSet(host, cred);
             const resp = await sendToPasswordContent(tab.id, {
@@ -768,7 +874,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: false, error: "unknown message" });
       }
     } catch (e) {
-      sendResponse({ ok: false, error: String(e?.message ?? e), state: client.state });
+      if (msg?.type === 'resolveSave' && sender.tab?.id != null) setSaveStatus(sender.tab.id, 'failed');
+      sendResponse({ ...failureResult(e), state: client.state });
     }
   })();
   return true; // async response

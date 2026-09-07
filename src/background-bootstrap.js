@@ -32,22 +32,22 @@ async function injectContentScripts(tabId, frameId) {
   }));
 }
 
-async function repairExistingContentScripts() {
-  try {
-    const tabs = await chrome.tabs.query({});
-    await Promise.all(tabs.map((tab) => injectContentScripts(tab.id)));
-  } catch (_) {}
-}
-
-async function repairToolbarAction({ repairExistingTabs = false } = {}) {
-  // Restore manifest-equivalent global state first.
+async function repairInstalledTabs() {
+  // Install/update migration only. A worker wake must not fan out across every
+  // tab; explicit fills recover missing receivers in the main background.
   try { await chrome.action.enable(); } catch (_) {}
   try { await chrome.action.setPopup({ popup: TOOLBAR_POPUP }); } catch (_) {}
-
-  if (!repairExistingTabs) return;
   try {
     const tabs = await chrome.tabs.query({});
-    await Promise.all(tabs.map((tab) => repairOneTab(tab.id)));
+    let nextTab = 0;
+    await Promise.all(Array.from({ length: Math.min(4, tabs.length) }, async () => {
+      while (nextTab < tabs.length) {
+        const tab = tabs[nextTab++];
+        await repairOneTab(tab.id);
+        // Restricted and discarded tabs do not need an eager recovery attempt.
+        if (!tab.discarded && /^https?:\/\//i.test(tab.url || '')) await injectContentScripts(tab.id);
+      }
+    }));
   } catch (_) {}
 }
 
@@ -59,18 +59,8 @@ try {
   console.error('[Apple All-In-One] background bundle failed to initialize', error);
 }
 
-// Repeat toolbar repair for lifecycle events and newly created/updated tabs so a stale
-// tab-specific popup override from an older dev build cannot survive.
-repairToolbarAction({ repairExistingTabs: true }).catch(() => {});
-repairExistingContentScripts().catch(() => {});
-chrome.runtime.onInstalled.addListener(() => {
-  repairToolbarAction({ repairExistingTabs: true }).catch(() => {});
-  repairExistingContentScripts().catch(() => {});
+let installationRepair;
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details?.reason !== 'install' && details?.reason !== 'update') return;
+  installationRepair ||= repairInstalledTabs().finally(() => { installationRepair = undefined; });
 });
-chrome.runtime.onStartup.addListener(() => {
-  repairToolbarAction({ repairExistingTabs: true }).catch(() => {});
-  repairExistingContentScripts().catch(() => {});
-});
-chrome.tabs.onCreated.addListener((tab) => { repairOneTab(tab.id).catch(() => {}); });
-chrome.tabs.onUpdated.addListener((tabId) => { repairOneTab(tabId).catch(() => {}); });
-chrome.tabs.onActivated.addListener(({ tabId }) => { repairOneTab(tabId).catch(() => {}); });
