@@ -128,7 +128,7 @@
       id: 'qa-extension',
       lastError: undefined,
       onMessage: runtimeMessages,
-      getManifest: () => ({ version: '1.3.1' }),
+      getManifest: () => ({ version: '1.3.2' }),
       getURL: (value) => new URL(value, location.origin).href,
       openOptionsPage: (cb) => respond(undefined, cb),
       sendMessage(message, cb) {

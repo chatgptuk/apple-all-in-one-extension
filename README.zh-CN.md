@@ -11,7 +11,7 @@
 
 本项目未经 Apple Inc. 认可、赞助或授权，也与 Apple Inc. 没有关联。文中出现 Apple、iCloud、iCloud+、Apple 密码等名称，仅用于说明兼容对象和所调用的服务。
 
-**当前版本：** 1.3.1<br>
+**当前版本：** 1.3.2<br>
 **项目仓库：** https://github.com/chatgptuk/apple-all-in-one-extension
 
 ## 这个项目适合谁

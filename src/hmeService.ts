@@ -64,9 +64,12 @@ export class ManagedPremiumMailSettings {
     return this.call<string>('generate');
   }
   reserveHme(hme: string, label: string, note?: string) {
+    // Omit absent notes: Chrome serializes undefined array entries as null.
+    if (note === undefined) return this.call<HmeEmail>('reserve', hme, label);
     return this.call<HmeEmail>('reserve', hme, label, note);
   }
   updateHmeMetadata(id: string, label: string, note?: string) {
+    if (note === undefined) return this.call<void>('metadata', id, label);
     return this.call<void>('metadata', id, label, note);
   }
   deactivateHme(id: string) {

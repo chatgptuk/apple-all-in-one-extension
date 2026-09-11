@@ -104,16 +104,35 @@ function harness(fetch) {
     tab: { id: 1 },
     frameId: 0,
   };
+  const wireMessages = [];
+  const send = async (message, origin = sender) => {
+    // Chrome messaging uses JSON, including undefined array entries becoming null.
+    const wireMessage = JSON.parse(JSON.stringify(message));
+    wireMessages.push(wireMessage);
+    for (const fn of listeners) {
+      const response = fn(wireMessage, origin);
+      if (response !== undefined) {
+        const result = await response;
+        return result === undefined ? undefined : JSON.parse(JSON.stringify(result));
+      }
+    }
+  };
+  const { ManagedPremiumMailSettings } = loadTs('src/hmeService.ts', {
+    'webextension-polyfill': { default: { runtime: {
+      sendMessage: message => send(message, {
+        id: 'test-extension', url: browser.runtime.getURL('popup.html'),
+      }),
+    } } },
+    './iCloudClient': cloud,
+    './hmeRepository': repo,
+  });
   return {
     state,
     messages,
     notifications,
-    async send(message, origin = sender) {
-      for (const fn of listeners) {
-        const response = fn(message, origin);
-        if (response !== undefined) return await response;
-      }
-    },
+    wireMessages,
+    send,
+    service: new ManagedPremiumMailSettings(new cloud.default(setupUrl, services, 'A')),
     manager(operation, args = [], url = 'popup.html') {
       return this.send(
         { type: 'hme:manager', key: setupUrl + '\nA', operation, args },
@@ -122,6 +141,67 @@ function harness(fetch) {
     },
   };
 }
+
+function mutationHarness() {
+  const requests = [];
+  const h = harness(async (url, options) => {
+    const body = options.body ? JSON.parse(options.body) : undefined;
+    requests.push({ url, body });
+    const result = url.endsWith('/list')
+      ? { hmeEmails: [], selectedForwardTo: '', forwardToEmails: [] }
+      : url.endsWith('/reserve')
+        ? { hme: { ...body, anonymousId: 'id-synthetic', isActive: true, createTimestamp: 1 } }
+        : {};
+    return { ok: true, json: async () => ({ success: true, result }) };
+  });
+  return { ...h, requests };
+}
+
+test('popup creation and metadata edits support empty notes over Chrome JSON messaging', async () => {
+  const h = mutationHarness();
+  await h.service.listHme();
+  for (const note of [undefined, '', '注册用途\nAccount note']) {
+    const created = await h.service.reserveHme('synthetic@icloud.com', 'example.test', note);
+    assert.equal(created.hme, 'synthetic@icloud.com');
+    assert.equal(h.requests.at(-1).body.note, note ?? 'Generated through Apple All-In-One');
+    assert.equal(h.wireMessages.at(-1).args.includes(null), false, 'new senders must not emit null notes');
+
+    await h.service.updateHmeMetadata(created.anonymousId, 'renamed.test', 'old note');
+    await h.service.updateHmeMetadata(created.anonymousId, 'renamed.test', note);
+    assert.equal(h.requests.at(-1).body.note, note ?? '', 'empty metadata clears the previous note');
+    const cached = await h.service.listHme();
+    assert.equal(cached.hmeEmails[0].note, note ?? '');
+    assert.equal(cached.hmeEmails[0].label, 'renamed.test');
+  }
+  assert.equal(h.requests.filter(request => request.url.endsWith('/list')).length, 1);
+});
+
+test('background accepts legacy omitted or JSON-null notes without writing the string null', async () => {
+  const h = mutationHarness();
+  for (const optionalArgs of [[], [undefined], [null]]) {
+    const reserved = await h.manager('reserve', ['synthetic@icloud.com', 'example.test', ...optionalArgs]);
+    assert.equal(reserved.ok, true);
+    assert.equal(h.requests.at(-1).body.note, 'Generated through Apple All-In-One');
+    const edited = await h.manager('metadata', ['id-synthetic', 'example.test', ...optionalArgs]);
+    assert.equal(edited.ok, true);
+    assert.equal(h.requests.at(-1).body.note, '');
+  }
+});
+
+test('optional-note compatibility still rejects malformed notes and missing required fields', async () => {
+  let requests = 0;
+  const h = harness(async () => { requests++; throw new Error('Must not reach iCloud'); });
+  for (const operation of ['reserve', 'metadata']) {
+    const id = operation === 'reserve' ? 'synthetic@icloud.com' : 'id-synthetic';
+    for (const note of [{}, [], 0, false, 'x'.repeat(501), 'bad\u0000note']) {
+      assert.equal((await h.manager(operation, [id, 'example.test', note])).ok, false);
+    }
+    for (const args of [[null, 'example.test', null], [id, null, null], [id], [id, 'example.test', null, 'extra']]) {
+      assert.equal((await h.manager(operation, args)).ok, false);
+    }
+  }
+  assert.equal(requests, 0);
+});
 
 test('real HME background preserves the session on offline/429 and clears it on 401', async () => {
   for (const mode of ['offline', 429, 401]) {

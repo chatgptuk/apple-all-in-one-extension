@@ -38,7 +38,8 @@ export type HmeOperationArgs = {
 export function validateHmeOperation(operation: unknown, args: unknown): asserts operation is HmeOperation {
   const text = (value: unknown, max: number, empty = false) => typeof value === 'string' && value.length <= max && (empty || !!value.trim()) && !/[\u0000-\u001f]/.test(value);
   const email = (value: unknown) => text(value, 254) && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value as string);
-  const note = (value: unknown) => value === undefined || (typeof value === 'string' && value.length <= 500 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value));
+  // Older popup senders encode an omitted optional note as JSON null.
+  const note = (value: unknown) => value == null || (typeof value === 'string' && value.length <= 500 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value));
   if (!Array.isArray(args)) throw new Error('Invalid Hide My Email operation arguments.');
   let valid = false;
   switch (operation) {
@@ -152,7 +153,7 @@ export class HmeRepository {
             const email = await api.reserveHme(
               id,
               String(args[1] || ''),
-              args[2] === undefined ? undefined : String(args[2])
+              args[2] == null ? undefined : String(args[2])
             );
             if (snapshot && email?.anonymousId)
               next = {
