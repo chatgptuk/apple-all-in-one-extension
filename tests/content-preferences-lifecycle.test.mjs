@@ -67,7 +67,7 @@ test('site preference changes affect only the exact hostname and retire open sug
   let closed = 0;
   const context = functionsFrom(source, ['applySitePreferences'], {
     sitePreferencesFor, location: { hostname: 'signin.example.test' },
-    sitePreferences: { suggestions: 'automatic', privateSignup: true },
+    sitePreferences: { suggestions: 'automatic', privateSignup: true, allowHttp: true },
     offerSeq: 0, aliasLookupSeq: 0, closeUi: () => closed++,
   });
   context.applySitePreferences({ 'example.test': { suggestions: 'manual', privateSignup: false } });
@@ -77,6 +77,9 @@ test('site preference changes affect only the exact hostname and retire open sug
   assert.equal(context.sitePreferences.suggestions, 'manual');
   assert.equal(context.offerSeq, 1);
   assert.equal(context.aliasLookupSeq, 1);
+  context.applySitePreferences({ 'signin.example.test': { suggestions: 'manual', privateSignup: false, allowHttp: false } });
+  assert.equal(closed, 2, 'HTTP preference changes also retire the stale chooser');
+  assert.equal(context.sitePreferences.allowHttp, false);
 });
 
 function chooserContext({ privateSignup = true, suggestions = 'automatic', ready = Promise.resolve(), logins = [] } = {}) {

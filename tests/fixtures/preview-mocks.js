@@ -91,9 +91,37 @@
     createTimestamp: Date.now() - index * 86400000, isActive: index % 4 !== 0,
   }));
   const siteLinks = {};
-  let sitePreferences = { suggestions: 'automatic', privateSignup: true };
+  let sitePreferences = { suggestions: 'automatic', privateSignup: true, allowHttp: true };
   let fills = 0,
     reads = 0;
+  let hmeFills = 0, hmeReservations = 0, hmeCandidates = 0;
+  if (params.has('clipboard')) {
+    let attempts = 0;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      writeText: async (value) => {
+        document.documentElement.dataset.clipboardAttempts = String(++attempts);
+        if (params.get('clipboard') === 'fail-once' && attempts === 1) throw new Error('Synthetic clipboard denial');
+        document.documentElement.dataset.copiedAddress = value;
+      },
+    } });
+  }
+  if (params.get('sessionRefresh') === '1') document.addEventListener('DOMContentLoaded', () => {
+    const refresh = document.createElement('button');
+    refresh.textContent = 'Refresh synthetic iCloud session';
+    refresh.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:9999;padding:10px';
+    refresh.onclick = () => {
+      const oldValue = local.clientState;
+      local.clientState = structuredClone(oldValue);
+      storageChanges.emit({ clientState: { oldValue, newValue: local.clientState } }, 'local');
+    };
+    document.body.append(refresh);
+  });
+  const recoveryMode = params.get('nativeRecovery');
+  let nativeState = recoveryMode ? (recoveryMode === 'challenge' ? 'needs_pin' : recoveryMode === 'transient' ? 'disconnected' : 'no_helper') : 'unlocked';
+  let nativeConnectAttempts = 0;
+  let nativeChallengeAttempts = 0;
+  let nativeLookupAttempts = 0;
+  let hasNativeChallenge = false;
   const snapshot = () => ({
     emails,
     forwardTo: 'synthetic@example.test',
@@ -128,13 +156,25 @@
       id: 'qa-extension',
       lastError: undefined,
       onMessage: runtimeMessages,
-      getManifest: () => ({ version: '1.3.2' }),
+      getManifest: () => ({ version: '1.3.7' }),
       getURL: (value) => new URL(value, location.origin).href,
       openOptionsPage: (cb) => respond(undefined, cb),
       sendMessage(message, cb) {
         let result = { ok: true };
-        if (message.type === 'getState' || message.type === 'connect')
-          result = { ok: true, state: 'unlocked' };
+        if (message.type === 'getState')
+          result = { ok: true, state: nativeState, hasChallenge: hasNativeChallenge };
+        if (message.type === 'connect') {
+          nativeConnectAttempts++;
+          document.documentElement.dataset.nativeConnectAttempts = String(nativeConnectAttempts);
+          if (recoveryMode && recoveryMode !== 'persistent' && nativeConnectAttempts > 1) nativeState = 'needs_pin';
+          result = { ok: nativeState === 'unlocked' || nativeState === 'needs_pin', state: nativeState, hasChallenge: hasNativeChallenge };
+        }
+        if (message.type === 'requestChallenge') {
+          nativeChallengeAttempts++;
+          hasNativeChallenge = recoveryMode !== 'challenge' || nativeChallengeAttempts > 1;
+          result = hasNativeChallenge ? { ok: true, state: nativeState, hasChallenge: true }
+            : { ok: false, state: nativeState, reason: 'unavailable', error: 'The operation could not be completed. Retry, or copy diagnostic information from the extension.' };
+        }
         if (message.type === 'getSitePreferences' || message.type === 'setSitePreferences') {
           if (message.preferences) sitePreferences = message.preferences;
           result = { ok: true, host: 'example.test', preferences: sitePreferences };
@@ -160,6 +200,11 @@
             ok: true,
             items: [{ username: 'Admin', domain: 'example.test' }],
           };
+        if (message.type === 'getLogins' && params.get('nativeSlow') === '1') {
+          nativeLookupAttempts++;
+          if (nativeLookupAttempts === 1)
+            result = { ok: false, reason: 'native_timeout', error: 'Apple Passwords did not respond in time.' };
+        }
         if (message.type === 'fillOnPage') {
           if (message.mode !== 'details') fills++;
           result = {
@@ -192,6 +237,16 @@
           result = { ok: true, item: null };
         if (message.type === 'hme:manager') {
           const [id, label, note] = message.args || [];
+          if (message.operation === 'generate') {
+            result.result = `new-synthetic-${++hmeCandidates}@icloud.com`;
+            document.documentElement.dataset.hmeCandidates = String(hmeCandidates);
+          }
+          if (message.operation === 'reserve') {
+            result.result = { anonymousId: `new-qa-${++hmeReservations}`, hme: id, label, note: note || '',
+              domain: '', createTimestamp: Date.now(), isActive: true, forwardToEmail: 'synthetic@example.test' };
+            emails = [result.result, ...emails];
+            document.documentElement.dataset.hmeReservations = String(hmeReservations);
+          }
           if (message.operation === 'site-links') result.result = structuredClone(siteLinks);
           if (message.operation === 'site-links-set') { siteLinks[id] = label; result.result = label; }
           if (message.operation === 'snapshot') result.result = snapshot();
@@ -218,7 +273,7 @@
             );
           if (message.operation === 'delete')
             emails = emails.filter((email) => email.anonymousId !== id);
-          if (!['snapshot', 'list', 'site-links'].includes(message.operation))
+          if (!['snapshot', 'list', 'site-links', 'generate'].includes(message.operation))
             queueMicrotask(() =>
               runtimeMessages.emit({
                 type: 'hme:list-changed',
@@ -238,9 +293,11 @@
     },
     tabs: {
       query: (...args) =>
-        respond([{ id: 1, url: 'https://example.test/login' }], args.at(-1)),
-      sendMessage: (...args) =>
-        respond({ ok: true, filled: false }, args.at(-1)),
+        respond([{ id: 1, url: params.get('http') === '1' ? 'http://example.test:8080/login' : 'https://example.test/login' }], args.at(-1)),
+      sendMessage: (...args) => {
+        if (args[1]?.type === 0) document.documentElement.dataset.hmeFills = String(++hmeFills);
+        return respond({ ok: true, filled: false }, args.at(-1));
+      },
       create: (options, cb) => respond({ id: 2, url: options.url }, cb),
     },
     i18n: { getUILanguage: () => 'en', getMessage: (name) => name },

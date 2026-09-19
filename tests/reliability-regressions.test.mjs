@@ -212,7 +212,7 @@ test('OTP and password cache preserve exact account identity', () => {
   assert.equal(cache.get('example.test', 'Admin').password, 'synthetic');
 });
 
-test('native timeout retires its port; late replies cannot satisfy a new request', async () => {
+test('secret-read timeout retires its port; late replies cannot satisfy a new request', async () => {
   const client = new ApplePasswords();
   let disconnected = false;
   const oldPort = {
@@ -225,7 +225,7 @@ test('native timeout retires its port; late replies cannot satisfy a new request
   client.session = { sharedKey: 'synthetic' };
   client.state = State.Unlocked;
   await assert.rejects(
-    client._send(Command.GET_LOGIN_NAMES_FOR_URL, {}, 5),
+    client._send(Command.GET_PASSWORD_FOR_LOGIN_NAME, {}, 5),
     /timeout/
   );
   assert.equal(disconnected, true);
@@ -235,19 +235,19 @@ test('native timeout retires its port; late replies cannot satisfy a new request
   client.port = newPort;
   let resolved = false;
   const pending = client
-    ._send(Command.GET_LOGIN_NAMES_FOR_URL, {}, 1000)
+    ._send(Command.GET_PASSWORD_FOR_LOGIN_NAME, {}, 1000)
     .then((result) => {
       resolved = true;
       return result;
     });
   client._dispatch(
-    { cmd: Command.GET_LOGIN_NAMES_FOR_URL, payload: 'stale' },
+    { cmd: Command.GET_PASSWORD_FOR_LOGIN_NAME, payload: 'stale' },
     oldPort
   );
   await Promise.resolve();
   assert.equal(resolved, false);
   client._dispatch(
-    { cmd: Command.GET_LOGIN_NAMES_FOR_URL, payload: 'fresh' },
+    { cmd: Command.GET_PASSWORD_FOR_LOGIN_NAME, payload: 'fresh' },
     newPort
   );
   assert.equal((await pending).payload, 'fresh');

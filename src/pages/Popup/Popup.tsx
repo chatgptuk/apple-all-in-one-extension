@@ -38,7 +38,7 @@ import { ManagedPremiumMailSettings as PremiumMailSettings } from '../../hmeServ
 import { hmeListCacheKey } from '../../hmeRepository';
 import { useHmeList } from '../../useHmeList';
 import { matchHmeAliases, normalizeHmeHost } from '../../hme-site-matching';
-import { DEFAULT_MANAGER_VIEW, sanitizeManagerView, selectManagedAddresses, type AddressFilter, type AddressSort, type ManagerViewState } from './management-model';
+import { DEFAULT_MANAGER_VIEW, sanitizeManagerView, selectManagedAddresses, addressDetailNavigation, type AddressFilter, type AddressSort, type ManagerViewState } from './management-model';
 import { canRetryPasswordRequest } from './password-requests';
 
 const IS_MANAGER = new URLSearchParams(window.location.search).get('manager') === '1';
@@ -506,6 +506,10 @@ const sendPasswordMessage = async <T,>(message: Record<string, unknown>, timeout
               },
             );
           });
+      const failure = response as { ok?: boolean; reason?: string } | undefined;
+      if (failure?.ok === false && failure.reason) {
+        return { ...failure, error: fillFailureGuidance(failure.reason) } as T;
+      }
       return response as T;
     } catch (error) {
       lastError = error;
@@ -523,18 +527,19 @@ const fillFailureGuidance = (reason?: string) => {
     case 'target_changed': return tr('The original field changed. Select the sign-in field again, then retry.', '原来的输入框已变化。请重新点击网页中的登录框，再重试。');
     case 'no_login_field': return tr('No sign-in field is visible. Click the field on the page, or copy the details here.', '当前未找到登录框。请先点击网页中的输入框，也可以在这里复制账号密码。');
     case 'no_otp_field': return tr('No verification-code field is visible. Select that field, or copy the code here.', '当前未找到验证码框。请先点击验证码输入框，也可以在这里复制验证码。');
-    case 'insecure_page': return tr('Password filling is blocked on this insecure page. Open the HTTPS version.', '此页面不是安全连接，已阻止密码填充。请打开 HTTPS 版本。');
+    case 'insecure_page': return tr('HTTP filling is disabled for this website. Enable it in Website Settings & Status, or use HTTPS.', '已按此网站的设置阻止 HTTP 填充。可在“网站设置与状态”中开启，或使用 HTTPS。');
     case 'locked': return tr('Apple Passwords is locked. Unlock the password session and retry.', 'Apple 密码尚未解锁。请解锁密码会话后重试。');
-    case 'native_timeout': return tr('Apple did not respond in time. Complete or dismiss the system prompt, then retry.', 'Apple 暂未响应。请完成或关闭系统验证提示后重试。');
+    case 'native_timeout': return tr('Apple is taking longer to respond. Check the system prompt and retry shortly; a slow list query does not immediately end your session.', 'Apple 响应较慢，请检查系统提示并稍后重试；列表查询暂时超时不会立即结束已解锁会话。');
     case 'native_busy': return tr('Another Apple authorization is in progress. Finish it before retrying.', '另一项 Apple 授权正在进行，请处理完成后重试。');
     case 'authorization_cancelled': return tr('System authorization was not completed. You can retry when ready.', '系统授权未完成。准备好后可以重新尝试。');
     case 'ambiguous_account': return tr('Apple returned multiple matching accounts. Open Apple Passwords to select the exact entry.', 'Apple 返回了多个同名匹配账号。请在 Apple 密码中选择准确的条目。');
+    case 'unavailable': return tr('The operation could not be completed. Retry, or copy the diagnostic report from Website Settings & Status.', '操作未能完成，请重试；如反复出现，请在“网站设置与状态”中复制诊断报告。');
     default: return tr('This action could not be completed. Select the field again and retry, or copy the details.', '本次操作未完成。请重新选择输入框后重试，或复制所需内容。');
   }
 };
 
-type SitePreferences = { suggestions: 'automatic' | 'manual'; privateSignup: boolean };
-type DiagnosticReport = { version: string; passwordState: string; icloudState: 'signed_in' | 'signed_out'; pendingSaveCount: number; recentEvents: Array<{ operation: string; reason: string; at: number }> };
+type SitePreferences = { suggestions: 'automatic' | 'manual'; privateSignup: boolean; allowHttp: boolean };
+type DiagnosticReport = { version: string; passwordState: string; icloudState: 'signed_in' | 'signed_out'; pendingSaveCount: number; recentEvents: Array<{ operation: string; reason: string; at: number }>; nativeConnection?: { startedAt: number; events: Array<{ reason: string; at: number; command?: number }> } };
 const SiteTools = ({ onPasswords, onHideEmail }: { onPasswords: () => void; onHideEmail: () => void }) => {
   const [open, setOpen] = useState(false);
   const [host, setHost] = useState('');
@@ -554,7 +559,7 @@ const SiteTools = ({ onPasswords, onHideEmail }: { onPasswords: () => void; onHi
   useEffect(() => { void load(); }, [load]);
   const update = async (next: SitePreferences) => {
     setBusy(true); setNotice('');
-    const response = await sendPasswordMessage<{ ok?: boolean; host?: string; preferences?: SitePreferences }>({ type: 'setSitePreferences', preferences: next }, 5000);
+    const response = await sendPasswordMessage<{ ok?: boolean; host?: string; preferences?: SitePreferences }>({ type: 'setSitePreferences', host, preferences: next }, 5000);
     if (response?.ok) { setPreferences(response.preferences || next); setHost(response.host || host); setNotice(tr('Saved for this website.', '已保存此网站的偏好。')); }
     else setNotice(tr('Could not save. Reopen the extension on the intended website.', '保存失败。请切回目标网站后重新打开扩展。'));
     setBusy(false);
@@ -593,6 +598,8 @@ const SiteTools = ({ onPasswords, onHideEmail }: { onPasswords: () => void; onHi
           <label><span>{tr('Inline suggestions', '网页内建议')}</span><select aria-label={tr('Inline suggestions', '网页内建议')} value={preferences.suggestions} onChange={(event) => void update({ ...preferences, suggestions: event.target.value as SitePreferences['suggestions'] })}><option value="automatic">{tr('Automatic', '自动显示')}</option><option value="manual">{tr('Pause on this website', '在此网站暂停')}</option></select></label>
           <label><span>{tr('Private signup suggestions', '私密注册建议')}</span><input type="checkbox" checked={preferences.privateSignup} onChange={(event) => void update({ ...preferences, privateSignup: event.target.checked })} /></label>
           <p>{tr('Manual filling from the extension and the right-click menu remains available.', '仍可使用扩展弹窗和右键菜单手动填充。')}</p>
+          <label><span>{tr('Allow filling on HTTP pages', '允许 HTTP 页面填充')}</span><input type="checkbox" aria-describedby="http-fill-description" checked={preferences.allowHttp !== false} onChange={(event) => void update({ ...preferences, allowHttp: event.target.checked })} /></label>
+          <p id="http-fill-description">{tr('On by default. HTTP is unencrypted: passwords and codes may be intercepted. Turn off to block HTTP filling for this hostname; HTTPS is unaffected.', '默认开启。HTTP 未加密，密码和验证码可能被截获。关闭后仅阻止此主机名的 HTTP 填充，不影响 HTTPS。')}</p>
         </fieldset>}
         <button type="button" className="site-tools-diagnostics" disabled={busy} onClick={() => void copyReport()}><Symbol name="copy" size={14} />{tr('Copy Safe Diagnostic Report', '复制安全诊断报告')}</button>
         {notice && <p role="status">{notice}</p>}
@@ -735,6 +742,7 @@ const PasswordsView = () => {
       setHasChallenge(res.hasChallenge !== false);
       return true;
     }
+    if (res?.state) { setState(res.state); setHasChallenge(!!res.hasChallenge); }
     setError(res?.error || tr('Could not request an Apple Passwords code.', '无法请求 Apple 密码验证码。'));
     return false;
   };
@@ -750,7 +758,7 @@ const PasswordsView = () => {
       return;
     }
     setState(connected.state || 'needs_pin');
-    // Starting the native challenge is now tied to this explicit user gesture, never popup mount.
+    // Reuse a live challenge rather than replacing the code already shown by macOS.
     if ((connected.state || 'needs_pin') === 'needs_pin') await requestAccessCode(false);
     else await refreshState();
   };
@@ -767,13 +775,17 @@ const PasswordsView = () => {
         let nextState: PasswordState = current.state;
         let hasLiveChallenge = current.hasChallenge;
         if (nextState === 'disconnected' || nextState === 'no_helper') {
-          const connected = await sendPasswordMessage<{ ok?: boolean; state?: PasswordState; error?: string }>({ type: 'connect' });
+          setBusy('connect');
+          const connected = await sendPasswordMessage<{ ok?: boolean; state?: PasswordState; hasChallenge?: boolean; error?: string }>({ type: 'connect' });
+          setBusy(undefined);
+          nextState = connected?.state || 'disconnected';
+          hasLiveChallenge = !!connected?.hasChallenge;
+          setState(nextState);
+          setHasChallenge(hasLiveChallenge);
           if (!connected?.ok) {
-            if (connected?.error) setError(connected.error);
+            setError(connected?.error || tr('Could not connect to Apple Passwords. Please retry.', '暂时无法连接 Apple 密码，请重试。'));
             return;
           }
-          nextState = connected.state || 'needs_pin';
-          setState(nextState);
         }
 
         if (nextState === 'needs_pin' && !hasLiveChallenge) {
@@ -786,8 +798,9 @@ const PasswordsView = () => {
           if (challenged?.ok) {
             setState(challenged.state || 'needs_pin');
             setHasChallenge(challenged.hasChallenge !== false);
-          } else if (challenged?.error) {
-            setError(challenged.error);
+          } else {
+            if (challenged?.state) { setState(challenged.state); setHasChallenge(!!challenged.hasChallenge); }
+            setError(challenged?.error || tr('Could not request an Apple Passwords code.', '无法请求 Apple 密码验证码。'));
           }
         }
       } catch (e) {
@@ -969,7 +982,17 @@ const PasswordsView = () => {
     );
   }
   if (state === 'no_helper') {
-    return <div className="unified-center"><span className="unified-hero-icon"><Symbol name="key" size={28} /></span><h2>{tr('Apple helper unavailable', 'Apple 辅助程序不可用')}</h2><p>{tr('Keep this extension’s fixed ID and install the included native policy helper.', '请保持此扩展的固定 ID，并安装随附的原生策略辅助程序。')}</p></div>;
+    return (
+      <div className="hme-view-body unified-center password-unlock">
+        <span className="unified-hero-icon"><Symbol name="key" size={28} /></span>
+        <h2>{tr('Apple helper unavailable', 'Apple 辅助程序不可用')}</h2>
+        <p>{tr('Try reconnecting first. If this keeps happening, check the extension’s fixed ID and native helper setup.', '请先重试连接。如果仍然失败，再检查扩展的固定 ID 和原生辅助程序配置。')}</p>
+        <button className="hme-primary-button" type="button" onClick={beginUnlock} disabled={busy === 'connect' || busy === 'challenge'} aria-busy={busy === 'connect' || busy === 'challenge'}>
+          {busy === 'connect' || busy === 'challenge' ? <><Spinner compact /> {tr('Connecting…', '正在连接…')}</> : <><Symbol name="refresh" size={17} /> {tr('Retry Connection', '重试连接')}</>}
+        </button>
+        {error && <ErrorBanner>{error}</ErrorBanner>}
+      </div>
+    );
   }
   if (state === 'needs_pin') {
     return (
@@ -1259,80 +1282,120 @@ const GenerateView = ({ client, onCreated }: { client: ICloudClient; onCreated: 
   const [isGenerating, setIsGenerating] = useState(true);
   const [isReserving, setIsReserving] = useState(false);
   const [error, setError] = useState<string>();
-  const [copied, setCopied] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle');
+  const latestClient = useRef(client);
+  latestClient.current = client;
+  const mounted = useRef(false);
+  const initialized = useRef(false);
+  const operation = useRef<'generate' | 'reserve' | undefined>(undefined);
+  const copyBusy = useRef(false);
+  const labelEdited = useRef(false);
 
   const generate = async () => {
+    if (!mounted.current || operation.current || copyBusy.current) return;
+    operation.current = 'generate';
     setError(undefined);
     setReserved(undefined);
-    setCopied(false);
+    setHmeEmail(undefined);
+    setCopyStatus('idle');
     setIsGenerating(true);
     try {
-      setHmeEmail(await new PremiumMailSettings(client).generateHme());
+      const email = await new PremiumMailSettings(latestClient.current).generateHme();
+      if (mounted.current) setHmeEmail(email);
     } catch (e) {
-      setError(String(e));
+      if (mounted.current) setError(String(e));
     } finally {
-      setIsGenerating(false);
+      operation.current = undefined;
+      if (mounted.current) setIsGenerating(false);
     }
   };
 
   useEffect(() => {
+    mounted.current = true;
     const bootstrap = async () => {
       const tab = IS_MANAGER ? undefined : await getActiveTabForPopup();
+      if (!mounted.current) return;
       if (tab?.url) {
         try {
           const hostname = new URL(tab.url).hostname;
           setHost(hostname);
-          setLabel(hostname);
+          if (!labelEdited.current) setLabel(hostname);
         } catch {
           setHost('');
         }
       }
 
       try {
-        const list = await new PremiumMailSettings(client).listHme();
-        setForwardTo(list.selectedForwardTo);
+        const list = await new PremiumMailSettings(latestClient.current).listHme();
+        if (mounted.current) setForwardTo(list.selectedForwardTo);
       } catch (e) {
-        setError(String(e));
+        if (mounted.current) setError(String(e));
       }
     };
 
-    bootstrap().catch((e) => setError(String(e)));
-    generate();
+    // The parent keys this view by iCloud account. A same-account session refresh
+    // replaces the client object but must not replace the user's candidate/draft.
+    // The ref also coalesces StrictMode's effect replay into one initial request.
+    if (!initialized.current) {
+      initialized.current = true;
+      bootstrap().catch((e) => { if (mounted.current) setError(String(e)); });
+      void generate();
+    }
+    return () => { mounted.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client]);
+  }, []);
+
+  const copyAddress = async (value: string) => {
+    if (!mounted.current || copyBusy.current) return;
+    copyBusy.current = true;
+    setCopyStatus('copying');
+    try {
+      await navigator.clipboard.writeText(value);
+      if (mounted.current) setCopyStatus('copied');
+    } catch {
+      // Reservation has already succeeded. A clipboard denial must not turn it
+      // into a failed create or invite the user to reserve the address again.
+      if (mounted.current) setCopyStatus('failed');
+    } finally {
+      copyBusy.current = false;
+    }
+  };
 
   const reserve = async (autofill: boolean) => {
-    if (!hmeEmail) return;
+    if (!mounted.current || !hmeEmail || !label.trim() || reserved || operation.current || copyBusy.current) return;
+    operation.current = 'reserve';
     setError(undefined);
     setIsReserving(true);
     try {
-      const result = await new PremiumMailSettings(client).reserveHme(
+      const result = await new PremiumMailSettings(latestClient.current).reserveHme(
         hmeEmail,
         label || host,
         note || undefined
       );
+      if (!mounted.current) return;
       setReserved(result);
       onCreated();
+      await copyAddress(result.hme);
+      if (!mounted.current) return;
       if (autofill && !IS_MANAGER) {
         try {
           await sendMessageToTab(MessageType.Autofill, result.hme);
         } catch {
-          setError(tr('The address was created, but this page could not be autofilled. Copy it instead.', '地址已创建，但无法在此页面自动填充。请改为复制地址。'));
+          if (mounted.current) setError(tr('The address was created, but this page could not be autofilled. Copy it instead.', '地址已创建，但无法在此页面自动填充。请改为复制地址。'));
         }
       }
     } catch (e) {
-      setError(String(e));
+      if (mounted.current) setError(String(e));
     } finally {
-      setIsReserving(false);
+      operation.current = undefined;
+      if (mounted.current) setIsReserving(false);
     }
   };
 
   const copy = async () => {
-    const value = reserved?.hme || hmeEmail;
+    const value = reserved?.hme;
     if (!value) return;
-    await navigator.clipboard.writeText(value);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1300);
+    await copyAddress(value);
   };
 
   return (
@@ -1353,7 +1416,7 @@ const GenerateView = ({ client, onCreated }: { client: ICloudClient; onCreated: 
             type="button"
             className="hme-circle-action"
             onClick={generate}
-            disabled={isGenerating || isReserving}
+            disabled={isGenerating || isReserving || copyStatus === 'copying'}
             aria-label={tr('Generate another address', '生成另一个地址')}
             title={tr('Generate another address', '生成另一个地址')}
           >
@@ -1367,7 +1430,7 @@ const GenerateView = ({ client, onCreated }: { client: ICloudClient; onCreated: 
       <section className="hme-group hme-form-group">
         <label className="hme-form-row">
           <span>{tr('Label', '标签')}</span>
-          <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={host || tr('Website or purpose', '网站或用途')} disabled={!!reserved || isReserving} />
+          <input value={label} onChange={(e) => { labelEdited.current = true; setLabel(e.target.value); }} placeholder={host || tr('Website or purpose', '网站或用途')} disabled={!!reserved || isReserving} />
         </label>
         <label className="hme-form-row">
           <span>{tr('Note', '备注')}</span>
@@ -1376,15 +1439,16 @@ const GenerateView = ({ client, onCreated }: { client: ICloudClient; onCreated: 
       </section>
 
       {error && <ErrorBanner>{error}</ErrorBanner>}
+      {copyStatus === 'failed' && <ErrorBanner>{tr('Address created, but copying failed. Click Copy to retry, or select the address and copy it manually.', '地址已创建，但复制失败。请点击“复制”重试，或选中地址手动复制。')}</ErrorBanner>}
 
       {!reserved ? (
         <div className="hme-actions">
-          <button className="hme-primary-button" type="button" disabled={!hmeEmail || !label || isGenerating || isReserving} onClick={() => reserve(!IS_MANAGER)}>
-            {isReserving ? <Spinner compact /> : <Symbol name="autofill" size={18} />}
-            {IS_MANAGER ? tr('Create Address', '创建地址') : tr('Use Address', '使用地址')}
+          <button className="hme-primary-button" type="button" disabled={!hmeEmail || !label || isGenerating || isReserving} onClick={() => reserve(false)}>
+            {isReserving ? <Spinner compact /> : <Symbol name="plus" size={18} />}
+            {tr('Create Address', '创建地址')}
           </button>
-          {!IS_MANAGER && <button className="hme-secondary-action" type="button" disabled={!hmeEmail || !label || isGenerating || isReserving} onClick={() => reserve(false)}>
-            {tr('Create without Autofill', '创建但不自动填充')}
+          {!IS_MANAGER && <button className="hme-secondary-action" type="button" disabled={!hmeEmail || !label || isGenerating || isReserving} onClick={() => reserve(true)}>
+            {tr('Create and Fill', '创建并填充')}
           </button>}
         </div>
       ) : (
@@ -1392,12 +1456,12 @@ const GenerateView = ({ client, onCreated }: { client: ICloudClient; onCreated: 
           <div className="hme-success-row">
             <span className="hme-symbol-tile is-green"><Symbol name="check" size={19} /></span>
             <div className="hme-success-copy">
-              <strong>{tr('Address Created', '地址已创建')}</strong>
+              <strong>{copyStatus === 'copied' ? tr('Address Created and Copied', '地址已创建并复制') : tr('Address Created', '地址已创建')}</strong>
               <span>{reserved.hme}</span>
             </div>
           </div>
           <div className="hme-success-buttons">
-            <button type="button" onClick={copy}><Symbol name={copied ? 'check' : 'copy'} size={16} />{copied ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>
+            <button type="button" disabled={copyStatus === 'copying'} onClick={copy}><Symbol name={copyStatus === 'copied' ? 'check' : 'copy'} size={16} />{copyStatus === 'copying' ? tr('Copying…', '正在复制…') : copyStatus === 'copied' ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>
             {!IS_MANAGER && <button type="button" onClick={() => sendMessageToTab(MessageType.Autofill, reserved.hme).catch(() => setError(tr('This page could not be autofilled. Copy the address and paste it manually.', '无法在此页面自动填充。请复制地址并手动粘贴。')))}>
               <Symbol name="autofill" size={16} />{tr('Autofill', '自动填充')}
             </button>}
@@ -1478,7 +1542,7 @@ const ManageView = ({
   refreshKey,
 }: {
   client: ICloudClient;
-  onSelect: (hme: HmeWithActivity) => void;
+  onSelect: (hme: HmeWithActivity, visible: HmeWithActivity[]) => void;
   refreshKey: number;
 }) => {
   const { emails, setEmails, forwardTo, isLoading, error, setError, refresh } = useHmeList(client, refreshKey);
@@ -1869,7 +1933,7 @@ const ManageView = ({
               hme={hme}
               selectionMode={selectionMode}
               selected={selectedIds.has(hme.anonymousId)}
-              onClick={() => selectionMode ? toggleSelection(hme.anonymousId) : onSelect(hme)}
+              onClick={() => selectionMode ? toggleSelection(hme.anonymousId) : onSelect(hme, filtered)}
             />
           ))}
         </section>
@@ -1915,11 +1979,17 @@ const DetailsView = ({
   hme,
   onBack,
   onChanged,
+  navigation,
+  onNavigate,
+  navigationFocus,
 }: {
   client: ICloudClient;
   hme: HmeWithActivity;
   onBack: () => void;
   onChanged: (deleted: boolean, next?: HmeEmail) => void;
+  navigation: { index: number; total: number; previous?: HmeWithActivity; next?: HmeWithActivity };
+  onNavigate: (direction: 'previous' | 'next') => void;
+  navigationFocus?: 'previous' | 'next';
 }) => {
   const [item, setItem] = useState(hme);
   const [busy, setBusy] = useState<'activation' | 'delete' | 'metadata'>();
@@ -1939,6 +2009,31 @@ const DetailsView = ({
   const [linkBusy, setLinkBusy] = useState(false);
   const [linksLoaded, setLinksLoaded] = useState(false);
   const [linkNotice, setLinkNotice] = useState('');
+  const previousButton = useRef<HTMLButtonElement>(null);
+  const nextButton = useRef<HTMLButtonElement>(null);
+  const cancelLeaveButton = useRef<HTMLButtonElement>(null);
+  const [pendingLeave, setPendingLeave] = useState<() => void>();
+
+  const leaveDetails = (action: () => void) => {
+    if (busy || linkBusy) return;
+    const unsaved = (editingMetadata && (draftLabel !== (item.label || '') || draftNote !== (item.note || ''))) || !!websiteDraft.trim();
+    if (unsaved) { setPendingLeave(() => action); return; }
+    action();
+  };
+
+  useEffect(() => {
+    if (pendingLeave) cancelLeaveButton.current?.focus();
+  }, [pendingLeave]);
+
+  useEffect(() => {
+    // Details are keyed by account/address so old async mail reads and copy
+    // notices cannot leak into the next address. Restore navigation focus after
+    // that remount so keyboard users can keep moving through the list.
+    if (!navigationFocus) return;
+    const preferred = navigationFocus === 'previous' ? previousButton.current : nextButton.current;
+    const alternate = navigationFocus === 'previous' ? nextButton.current : previousButton.current;
+    (preferred?.disabled ? alternate : preferred)?.focus({ preventScroll: true });
+  }, [navigationFocus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2134,7 +2229,29 @@ const DetailsView = ({
 
   return (
     <div className="hme-view-body">
-      <button type="button" className="hme-back-button" onClick={onBack}><Symbol name="back" size={16} />{tr('My Addresses', '我的地址')}</button>
+      <nav className="hme-detail-toolbar" aria-label={tr('Address navigation', '地址导航')}>
+        <button type="button" className="hme-back-button" disabled={!!busy || linkBusy} onClick={() => leaveDetails(onBack)}><Symbol name="back" size={16} />{tr('My Addresses', '我的地址')}</button>
+        <div className="hme-detail-nav-controls">
+          <button ref={previousButton} type="button" className="hme-circle-action" aria-label={tr('Previous address', '上一个地址')} title={tr('Previous address', '上一个地址')} disabled={!navigation.previous || !!busy || linkBusy} onClick={() => leaveDetails(() => onNavigate('previous'))}><Symbol name="chevron-right" size={16} className="hme-previous-chevron" /></button>
+          <span className="hme-detail-position" role="status" aria-live="polite" aria-atomic="true" aria-label={navigation.index < 0 ? tr('Address not in this list', '地址不在当前列表中') : getResolvedLanguage() === 'zh-CN' ? `第 ${navigation.index + 1} 个，共 ${navigation.total} 个地址` : `Address ${navigation.index + 1} of ${navigation.total}`}>
+            {navigation.index >= 0 ? `${navigation.index + 1} / ${navigation.total}` : '—'}
+          </span>
+          <button ref={nextButton} type="button" className="hme-circle-action" aria-label={tr('Next address', '下一个地址')} title={tr('Next address', '下一个地址')} disabled={!navigation.next || !!busy || linkBusy} onClick={() => leaveDetails(() => onNavigate('next'))}><Symbol name="chevron-right" size={16} /></button>
+        </div>
+      </nav>
+
+      {pendingLeave && (
+        <section className="hme-leave-confirm" role="alertdialog" aria-labelledby="hme-leave-title" aria-describedby="hme-leave-description" onKeyDown={(event) => {
+          if (event.key === 'Escape') { event.preventDefault(); setPendingLeave(undefined); }
+        }}>
+          <strong id="hme-leave-title">{tr('Unsaved Changes', '有未保存的修改')}</strong>
+          <p id="hme-leave-description">{tr('Stay to finish editing, or discard these changes and leave this address.', '可继续编辑；放弃修改后才会离开当前地址。')}</p>
+          <div>
+            <button ref={cancelLeaveButton} type="button" onClick={() => setPendingLeave(undefined)}>{tr('Keep Editing', '继续编辑')}</button>
+            <button type="button" disabled={!!busy || linkBusy} onClick={() => { setPendingLeave(undefined); pendingLeave(); }}>{tr('Discard and Continue', '放弃修改并继续')}</button>
+          </div>
+        </section>
+      )}
 
       <section className="hme-detail-hero">
         <SiteIcon domain={item.domain} label={item.label} note={item.note} large inactive={!item.isActive} />
@@ -2337,6 +2454,9 @@ const Popup = () => {
     IS_MANAGER || storedPopupState === PopupState.AuthenticatedAndManaging ? 'manage' : 'generate'
   );
   const [selected, setSelected] = useState<HmeWithActivity>();
+  const [detailAddresses, setDetailAddresses] = useState<HmeWithActivity[]>([]);
+  const [detailNavigationFocus, setDetailNavigationFocus] = useState<'previous' | 'next'>();
+  const detailNavigation = addressDetailNavigation(detailAddresses, selected?.anonymousId);
   const [selectedAccountKey, setSelectedAccountKey] = useState('');
   const activeAccountKey = clientState ? hmeListCacheKey(clientState) : '';
   const previousAccountKey = useRef(activeAccountKey);
@@ -2358,6 +2478,8 @@ const Popup = () => {
     previousAccountKey.current = activeAccountKey;
     setSelected(undefined);
     setSelectedAccountKey('');
+    setDetailAddresses([]);
+    setDetailNavigationFocus(undefined);
     if (wasConnected) setView('manage');
   }, [activeAccountKey]);
 
@@ -2552,6 +2674,7 @@ const Popup = () => {
 
   const navigateHme = (next: 'generate' | 'manage') => {
     setSelected(undefined);
+    setDetailAddresses([]);
     setView(next);
     setStoredPopupState(
       next === 'manage' ? PopupState.AuthenticatedAndManaging : PopupState.Authenticated
@@ -2575,6 +2698,7 @@ const Popup = () => {
       setHmeDiscoveryDone(false);
       setStoredPopupState(PopupState.SignedOut);
       setSelected(undefined);
+      setDetailAddresses([]);
       setView('generate');
 
       if (expiredClientState) {
@@ -2600,6 +2724,7 @@ const Popup = () => {
     setClientState(undefined);
     setStoredPopupState(PopupState.SignedOut);
     setSelected(undefined);
+    setDetailAddresses([]);
     setView('generate');
   };
 
@@ -2669,8 +2794,10 @@ const Popup = () => {
             key={activeAccountKey}
             client={hmeClient}
             refreshKey={refreshKey}
-            onSelect={(hme) => {
+            onSelect={(hme, visible) => {
               setSelected(hme);
+              setDetailAddresses(visible);
+              setDetailNavigationFocus(undefined);
               setSelectedAccountKey(activeAccountKey);
               setView('details');
             }}
@@ -2682,14 +2809,24 @@ const Popup = () => {
             key={`${activeAccountKey}:${selected.anonymousId}`}
             client={hmeClient}
             hme={selected}
-            onBack={() => setView('manage')}
+            navigation={detailNavigation}
+            navigationFocus={detailNavigationFocus}
+            onNavigate={(direction) => {
+              const next = detailNavigation[direction];
+              if (!next) return;
+              setDetailNavigationFocus(direction);
+              setSelected(next);
+            }}
+            onBack={() => { setView('manage'); setDetailAddresses([]); }}
             onChanged={(deleted, next) => {
               setRefreshKey((key) => key + 1);
               if (deleted) {
                 setSelected(undefined);
+                setDetailAddresses([]);
                 setView('manage');
               } else if (next) {
                 setSelected(next);
+                setDetailAddresses((items) => items.map((item) => item.anonymousId === next.anonymousId ? { ...item, ...next } : item));
               }
             }}
           />

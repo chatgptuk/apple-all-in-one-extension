@@ -1,13 +1,13 @@
 /**
  * Shared, runtime-checked boundaries for password messages. These types describe
  * metadata and delivery intent, never authorize a caller or a destination.
- * @typedef {'target_changed'|'no_login_field'|'no_otp_field'|'insecure_page'|'locked'|'native_timeout'|'native_busy'|'authorization_cancelled'|'ambiguous_account'|'unavailable'|'invalid_request'} FailureReason
- * @typedef {{suggestions:'automatic'|'manual', privateSignup:boolean}} SitePreferences
+ * @typedef {'target_changed'|'no_login_field'|'no_otp_field'|'insecure_page'|'insecure_save'|'locked'|'native_timeout'|'native_busy'|'authorization_cancelled'|'ambiguous_account'|'unavailable'|'invalid_request'} FailureReason
+ * @typedef {{suggestions:'automatic'|'manual', privateSignup:boolean, allowHttp:boolean}} SitePreferences
  * @typedef {{type:'fillOnPage',loginName:{username:string},mode?:'fill'|'details'} | {type:'fillOtpOnPage',username:string,mode?:'fill'|'details'}} DetailRequest
  * @typedef {{expectedOrigin:string,expectedHref:string,expectedDocumentToken:string,targetToken:string,documentId?:string}} FillBinding
  * @typedef {{ok:boolean,filled?:boolean,reason?:FailureReason,error?:string}} FillResult
  */
-const reasons = new Set(['target_changed', 'no_login_field', 'no_otp_field', 'insecure_page', 'locked', 'native_timeout', 'native_busy', 'authorization_cancelled', 'ambiguous_account', 'unavailable', 'invalid_request']);
+const reasons = new Set(['target_changed', 'no_login_field', 'no_otp_field', 'insecure_page', 'insecure_save', 'locked', 'native_timeout', 'native_busy', 'authorization_cancelled', 'ambiguous_account', 'unavailable', 'invalid_request']);
 /** @param {unknown} value @returns {Record<string, unknown>} */
 function record(value) { return value && typeof value === 'object' && !Array.isArray(value) ? /** @type {Record<string, unknown>} */ (value) : {}; }
 /** @param {unknown} value @param {number} [max] */
@@ -15,7 +15,7 @@ function text(value, max = 4096) { return typeof value === 'string' && value.len
 /** @param {unknown} input @returns {SitePreferences} */
 export function normalizeSitePreferences(input) {
   const value = record(input);
-  return { suggestions: value.suggestions === 'manual' ? 'manual' : 'automatic', privateSignup: value.privateSignup !== false };
+  return { suggestions: value.suggestions === 'manual' ? 'manual' : 'automatic', privateSignup: value.privateSignup !== false, allowHttp: value.allowHttp !== false };
 }
 /** @param {unknown} input */
 export function validPasswordRequest(input) {
@@ -32,7 +32,7 @@ export function validPasswordRequest(input) {
     case 'verifyPin': return typeof m.pin === 'string' && /^\d{6}$/.test(m.pin);
     case 'setSitePreferences': {
       const p = record(m.preferences);
-      return (p.suggestions === 'automatic' || p.suggestions === 'manual') && typeof p.privateSignup === 'boolean';
+      return text(m.host, 253) && !!m.host && (p.suggestions === 'automatic' || p.suggestions === 'manual') && typeof p.privateSignup === 'boolean' && (p.allowHttp === undefined || typeof p.allowHttp === 'boolean');
     }
     case 'inlineLogins': case 'inlineOtpItems': case 'getLogins': case 'getOtpItems':
     case 'getState': case 'connect': case 'requestChallenge': case 'refreshAndRefill':
@@ -64,6 +64,7 @@ export function failureReason(error) {
   if (/ambiguous/i.test(message)) return 'ambiguous_account';
   if (/non-HTTPS|insecure/i.test(message)) return 'insecure_page';
   if (/not unlocked|is locked|needs_pin/i.test(message)) return 'locked';
+  if (/session expired|invalid session|session changed|not connected|connection closed|native host has exited/i.test(message)) return 'locked';
   if (/busy|queue/i.test(message)) return 'native_busy';
   if (/timed? ?out|timeout/i.test(message)) return 'native_timeout';
   if (/cancelled|canceled|denied by user/i.test(message)) return 'authorization_cancelled';
@@ -76,7 +77,8 @@ export function failureMessage(reason, chinese = false) {
     target_changed: ['The sign-in page changed. Select the field again.', '登录页面或输入框已变化，请重新点击要填充的输入框。'],
     no_login_field: ['No compatible sign-in field is visible. If sign-in is embedded, click its field to use the inline chooser. You can also copy from details.', '当前页面没有可填充的登录框。若登录框位于嵌入页面，请点击该框使用网页选择器；也可以在详情中复制。'],
     no_otp_field: ['No verification-code field is visible. Select its field, or copy the code from details.', '未找到验证码输入框，请点击该输入框，或从详情复制验证码。'],
-    insecure_page: ['Filling is blocked on an unencrypted page. Use the website’s HTTPS sign-in page.', '当前网页未加密，已阻止填充。请使用该网站的 HTTPS 登录页。'],
+    insecure_page: ['HTTP filling is disabled for this website. Enable it in Website Settings & Status, or use HTTPS.', '已按此网站的设置阻止 HTTP 填充。可在扩展“网站设置与状态”中开启，或使用 HTTPS。'],
+    insecure_save: ['Saving passwords from this HTTP page is not supported. Use HTTPS or save in Apple Passwords; the HTTP filling setting is separate.', '此 HTTP 页面不支持保存密码。请使用 HTTPS 页面或在 Apple 密码中保存；这与 HTTP 填充开关无关。'],
     locked: ['Unlock Apple Passwords from the extension toolbar, then retry.', '请从扩展工具栏解锁 Apple 密码后重试。'],
     native_timeout: ['Apple Passwords did not respond in time. Check the system authorization prompt, then retry.', 'Apple 密码响应超时，请检查系统授权窗口后重试。'],
     native_busy: ['Apple Passwords is handling another request. Finish it, then retry.', 'Apple 密码正在处理另一项请求，请先完成该操作再重试。'],

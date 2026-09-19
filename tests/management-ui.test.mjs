@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTs, read } from './source-harness.mjs';
 
-const { selectManagedAddresses, sanitizeManagerView } = loadTs('src/pages/Popup/management-model.ts');
+const { selectManagedAddresses, sanitizeManagerView, addressDetailNavigation } = loadTs('src/pages/Popup/management-model.ts');
 const { canRetryPasswordRequest } = loadTs('src/pages/Popup/password-requests.ts');
 const aliases = Array.from({ length: 660 }, (_, index) => ({
   anonymousId: `alias-${index}`, hme: `private-${index}@icloud.com`,
@@ -11,6 +11,73 @@ const aliases = Array.from({ length: 660 }, (_, index) => ({
   lastReceivedAt: index === 90 ? 100 : undefined,
 }));
 const select = (options = {}) => selectManagedAddresses(aliases, { search: '', filter: 'all', sort: 'created', ...options });
+
+test('address details traverse the full visible list without wrapping at either boundary', () => {
+  const visible = select();
+  const first = addressDetailNavigation(visible, 'alias-0');
+  assert.equal(first.index, 0);
+  assert.equal(first.total, 660);
+  assert.equal(first.previous, undefined);
+  assert.equal(first.next.anonymousId, 'alias-1');
+  const middle = addressDetailNavigation(visible, 'alias-330');
+  assert.equal(middle.previous.anonymousId, 'alias-329');
+  assert.equal(middle.next.anonymousId, 'alias-331');
+  const last = addressDetailNavigation(visible, 'alias-659');
+  assert.equal(last.previous.anonymousId, 'alias-658');
+  assert.equal(last.next, undefined);
+});
+
+test('address detail navigation uses the search, filter and sort snapshot', () => {
+  const visible = select({ search: 'private-9', filter: 'active', sort: 'activity' });
+  assert.equal(visible[0].anonymousId, 'alias-90');
+  const first = addressDetailNavigation(visible, 'alias-90');
+  assert.equal(first.total, 5);
+  assert.equal(first.next.anonymousId, 'alias-92');
+  assert.equal(first.previous, undefined);
+  assert.equal(addressDetailNavigation(visible, 'alias-98').next, undefined);
+});
+
+test('empty, missing and single-address detail lists cannot navigate', () => {
+  for (const [items, id] of [[[], undefined], [aliases, 'missing'], [[aliases[0]], 'alias-0']]) {
+    const nav = addressDetailNavigation(items, id);
+    assert.equal(nav.previous, undefined);
+    assert.equal(nav.next, undefined);
+    assert.equal(nav.index, items.length === 1 ? 0 : -1);
+  }
+});
+
+test('metadata edits do not reorder an open detail navigation snapshot', () => {
+  const visible = select({ sort: 'label' });
+  const updated = visible.map((item) => item.anonymousId === 'alias-1' ? { ...item, label: 'ZZZ renamed' } : item);
+  const nav = addressDetailNavigation(updated, 'alias-1');
+  assert.equal(nav.index, 1);
+  assert.equal(nav.previous.anonymousId, 'alias-0');
+  assert.equal(nav.next.anonymousId, 'alias-2');
+});
+
+test('detail navigation guards unsaved edits and remounts address-specific state', () => {
+  const popup = read('src/pages/Popup/Popup.tsx');
+  assert.match(popup, /onSelect\(hme, filtered\)/);
+  assert.match(popup, /setDetailAddresses\(visible\)/);
+  assert.match(popup, /if \(busy \|\| linkBusy\) return/);
+  assert.match(popup, /draftLabel !== \(item.label \|\| ''\)/);
+  assert.match(popup, /!!websiteDraft.trim\(\)/);
+  assert.match(popup, /if \(unsaved\) \{ setPendingLeave\(\(\) => action\); return; \}/);
+  assert.match(popup, /role="alertdialog" aria-labelledby="hme-leave-title"/);
+  assert.match(popup, /leaveDetails\(\(\) => onNavigate\('previous'\)\)/);
+  assert.match(popup, /leaveDetails\(\(\) => onNavigate\('next'\)\)/);
+  assert.match(popup, /<DetailsView\s+key=\{`\$\{activeAccountKey\}:\$\{selected.anonymousId\}`\}/);
+});
+
+test('new-address primary action creates only; filling requires a separate explicit action', () => {
+  const popup = read('src/pages/Popup/Popup.tsx');
+  const generate = popup.slice(popup.indexOf('const GenerateView ='), popup.indexOf('const formatActivityTime'));
+  assert.match(generate, /className="hme-primary-button"[^>]+onClick=\{\(\) => reserve\(false\)\}/);
+  assert.match(generate, /className="hme-secondary-action"[^>]+onClick=\{\(\) => reserve\(true\)\}/);
+  assert.match(generate, /tr\('Create Address', '创建地址'\)/);
+  assert.match(generate, /tr\('Create and Fill', '创建并填充'\)/);
+  assert.match(generate, /if \(autofill && !IS_MANAGER\)/);
+});
 
 test('all 660 addresses are available without pagination and search reaches the last entry', () => {
   assert.equal(select().length, 660);

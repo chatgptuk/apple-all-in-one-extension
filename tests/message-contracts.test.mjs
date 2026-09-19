@@ -31,10 +31,15 @@ test('diagnostic errors have stable reasons and never echo native secrets or URL
 });
 
 test('site preferences use exact hostname and safe defaults', () => {
-  const stored = { 'accounts.example.test': {suggestions:'manual',privateSignup:false} };
+  const stored = { 'accounts.example.test': {suggestions:'manual',privateSignup:false,allowHttp:false} };
   assert.deepEqual(sitePreferencesFor(stored, 'accounts.example.test'), stored['accounts.example.test']);
-  assert.deepEqual(sitePreferencesFor(stored, 'other.example.test'), {suggestions:'automatic',privateSignup:true});
-  assert.deepEqual(normalizeSitePreferences(null), {suggestions:'automatic',privateSignup:true});
+  assert.deepEqual(sitePreferencesFor(stored, 'other.example.test'), {suggestions:'automatic',privateSignup:true,allowHttp:true});
+  assert.deepEqual(normalizeSitePreferences(null), {suggestions:'automatic',privateSignup:true,allowHttp:true});
+  assert.equal(normalizeSitePreferences({ privateSignup: false }).allowHttp, true);
+  const request = { type: 'setSitePreferences', host: 'example.test', preferences: stored['accounts.example.test'] };
+  assert.equal(validPasswordRequest(request), true);
+  assert.equal(validPasswordRequest({ ...request, host: undefined }), false);
+  assert.equal(validPasswordRequest({ ...request, preferences: { ...request.preferences, allowHttp: 'false' } }), false);
   for (const host of ['https://example.test', 'example.test/path', 'a@b.test', 'a.test?x']) assert.equal(validSiteHost(host), false);
 });
 

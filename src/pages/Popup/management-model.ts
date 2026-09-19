@@ -11,6 +11,17 @@ export const DEFAULT_MANAGER_VIEW: ManagerViewState = {
   filter: 'all', sort: 'created', scrollTop: 0,
 };
 
+/** Navigate the visible-list snapshot, not a newly sorted full address list. */
+export function addressDetailNavigation<T extends { anonymousId: string }>(items: T[], currentId?: string) {
+  const index = items.findIndex((item) => item.anonymousId === currentId);
+  return {
+    index,
+    total: items.length,
+    previous: index > 0 ? items[index - 1] : undefined,
+    next: index >= 0 && index + 1 < items.length ? items[index + 1] : undefined,
+  };
+}
+
 /** Persist only presentation settings, never the search text or selected addresses. */
 export function sanitizeManagerView(value: unknown): ManagerViewState {
   const state = value as Partial<ManagerViewState> | undefined;

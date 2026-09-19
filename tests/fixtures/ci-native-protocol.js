@@ -5,6 +5,7 @@ globalThis.__CI_NATIVE__ = { reads: 0, delayMs: 0, startedAt: Date.now() };
 export class ApplePasswords {
   constructor() { this.state = State.Unlocked; this.ready = true; this.hasChallenge = false; }
   onStateChange(callback) { this.callback = callback; }
+  getDiagnostics() { return { startedAt: globalThis.__CI_NATIVE__.startedAt, events: [] }; }
   async connect() { this.ready = true; this.state = State.Unlocked; }
   async getLoginNamesForURL(_tabId, url) { return [{ username: 'synthetic-user', url, urls: [url] }]; }
   async getPasswordForLoginName(_tabId, _url, login) {

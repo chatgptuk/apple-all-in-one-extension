@@ -147,6 +147,10 @@ function isMissingReceiverError(error) {
 // that tab instead of surfacing Chrome's opaque "Receiving end does not exist" error.
 // Injection happens only after a user-triggered fill and only into the requested frame.
 async function sendToPasswordContent(tabId, message, frameId = 0, binding) {
+  // Re-read the site setting after Touch ID, including cache hits and refills.
+  if (message.type === 'fill' || message.type === 'fillOtp') {
+    if (!await isPasswordFillAllowed(binding?.expectedHref)) throw new Error('refusing to fill on a non-HTTPS page');
+  }
   const options = binding?.documentId ? { documentId: binding.documentId } : { frameId };
   const payload = binding ? { ...message, ...binding } : message;
   try {
@@ -165,6 +169,7 @@ async function sendToPasswordContent(tabId, message, frameId = 0, binding) {
 }
 
 async function preparePasswordFill(tabId, url, frameId = 0, documentId, requestDocumentToken) {
+  if (!await isPasswordFillAllowed(url)) throw new Error('refusing to fill on a non-HTTPS page');
   const expectedOrigin = new URL(url).origin;
   // A content script's sender URL can predate an SPA's locale/route rewrite. Bind
   // preparation to the requesting document, then snapshot its current same-origin
@@ -190,8 +195,10 @@ async function preparePasswordFill(tabId, url, frameId = 0, documentId, requestD
 const KEEPALIVE_ALARM = "open-passwords-keepalive";
 chrome.alarms.clear(KEEPALIVE_ALARM).catch(() => {});
 
-async function ensureConnected() {
-  if (client.state === State.Disconnected) {
+async function ensureConnected({ retryUnavailable = false } = {}) {
+  // Ordinary page lookups must not repeatedly start a missing/incompatible host.
+  // Opening the popup or pressing Retry explicitly permits another attempt.
+  if (client.state === State.Disconnected || (retryUnavailable && client.state === State.NoHelper)) {
     try {
       await client.connect();
     } catch (e) {
@@ -270,8 +277,7 @@ function registrableHost(u) {
   }
 }
 
-// loopback (secure context) and reserved .test / .localhost TLDs (RFC 6761, never real
-// sites) are the only non-HTTPS origins we treat as fillable/saveable
+// Native save behavior remains restricted to HTTPS and local development hosts.
 function isLocalDevHost(host) {
   return (
     host === "localhost" ||
@@ -280,6 +286,17 @@ function isLocalDevHost(host) {
     host?.endsWith(".localhost") ||
     host?.endsWith(".test")
   );
+}
+
+// HTTP filling is allowed by default; only an explicit exact-host setting blocks it.
+// A failed storage read must not bypass a user's saved block.
+async function isPasswordFillAllowed(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+  if (parsed.protocol === 'https:') return true;
+  if (parsed.protocol !== 'http:') return false;
+  const stored = await chrome.storage.local.get(SITE_PREFERENCES_KEY);
+  return sitePreferencesFor(stored[SITE_PREFERENCES_KEY], parsed.hostname.toLowerCase()).allowHttp;
 }
 
 // Internal-only bridge used by the merged Hide My Email module for an explicitly
@@ -367,11 +384,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const host = registrableHost(tab?.url);
           if (!validSiteHost(host) || !/^https?:\/\//i.test(tab?.url || '')) return sendResponse({ ok: false, reason: 'unavailable' });
           const stored = await chrome.storage.local.get(SITE_PREFERENCES_KEY);
+          const previous = sitePreferencesFor(stored[SITE_PREFERENCES_KEY], host);
           const preferences = msg.type === 'setSitePreferences'
-            ? normalizeSitePreferences(msg.preferences)
-            : sitePreferencesFor(stored[SITE_PREFERENCES_KEY], host);
+            ? normalizeSitePreferences({ ...previous, ...msg.preferences })
+            : previous;
           if (msg.type === 'setSitePreferences') {
-            const entries = Object.entries(stored[SITE_PREFERENCES_KEY] || {}).filter(([key]) => validSiteHost(key) && key !== host).slice(-199);
+            if (msg.host !== host) return sendResponse(failureResult({ reason: 'target_changed' }));
+            await ensurePopupTarget(tab);
+            // Do not evict an explicit HTTP block when another website is configured.
+            const entries = Object.entries(stored[SITE_PREFERENCES_KEY] || {}).filter(([key]) => validSiteHost(key) && key !== host);
             await chrome.storage.local.set({ [SITE_PREFERENCES_KEY]: Object.fromEntries([...entries, [host, preferences]]) });
           }
           sendResponse({ ok: true, host, preferences });
@@ -384,6 +405,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, report: {
             version: chrome.runtime.getManifest().version,
             passwordState: client.state,
+            nativeConnection: client.getDiagnostics(),
             icloudState: clientState ? 'signed_in' : 'signed_out',
             recentEvents: recentDiagnosticEvents.slice(),
             pendingSaveCount: pendingSaves.size,
@@ -456,7 +478,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             return sendResponse({ ok: false, error: "Refresh this page and select the sign-in field again." });
           }
           const host = registrableHost(frameUrl);
-          if (!/^https:\/\//i.test(frameUrl) && !isLocalDevHost(host)) {
+          if (!await isPasswordFillAllowed(frameUrl)) {
             return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS frame" });
           }
           const binding = await preparePasswordFill(sender.tab.id, frameUrl, frameId, sender.documentId, msg.documentToken);
@@ -495,13 +517,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             return sendResponse({ ok: false, error: "Refresh this page and select the sign-in field again." });
           }
           const host = registrableHost(frameUrl);
-          const isLocalDev =
-            host === "localhost" ||
-            host === "127.0.0.1" ||
-            host === "[::1]" ||
-            host?.endsWith(".localhost") ||
-            host?.endsWith(".test");
-          if (!/^https:\/\//i.test(frameUrl) && !isLocalDev) {
+          if (!await isPasswordFillAllowed(frameUrl)) {
             return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS frame" });
           }
           // ignore caller-supplied loginName.sites, query by frame's own host
@@ -554,7 +570,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           const host = registrableHost(frameUrl);
           if (!/^https:\/\//i.test(frameUrl) && !isLocalDevHost(host)) {
-            return sendResponse({ ok: false, error: "refusing to save from a non-HTTPS frame" });
+            return sendResponse({ ok: false, reason: 'insecure_save' });
           }
           if (!msg.password) return sendResponse({ ok: false, error: "no password" });
           const detected = (msg.username || "").trim();
@@ -620,7 +636,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const tab = await activeTab();
           if (!tab?.url || tab.id == null) return sendResponse({ ok: false, error: "no active tab" });
           const host = registrableHost(tab.url);
-          if (!/^https:\/\//i.test(tab.url) && !isLocalDevHost(host)) {
+          if (!await isPasswordFillAllowed(tab.url)) {
             return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS page" });
           }
           const detailsOnly = msg.mode === 'details';
@@ -672,14 +688,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         case "getState":
-          // Pure state read. Merely opening the toolbar popup must never connect to the native
-          // helper or summon a macOS access-code prompt. The user explicitly starts that flow.
+          // Pure state read; the popup explicitly sends connect when opened.
           sendResponse({ ok: true, state: client.state, hasChallenge: client.hasChallenge });
           break;
 
         case "connect":
-          await ensureConnected();
-          sendResponse({ ok: true, state: client.state });
+          await ensureConnected({ retryUnavailable: true });
+          sendResponse({ ok: client.state === State.NeedsPin || client.ready, state: client.state, hasChallenge: client.hasChallenge });
           break;
 
         case "requestChallenge":
@@ -740,15 +755,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const tab = await activeTab();
           if (!tab?.url) return sendResponse({ ok: false, error: "no active tab" });
           const host = registrableHost(tab.url);
-          // require HTTPS except local dev: loopback (secure context) and reserved
-          // .test / .localhost TLDs (RFC 6761, never real sites)
-          const isLocalDev =
-            host === "localhost" ||
-            host === "127.0.0.1" ||
-            host === "[::1]" ||
-            host?.endsWith(".localhost") ||
-            host?.endsWith(".test");
-          if (!/^https:\/\//i.test(tab.url) && !isLocalDev) {
+          if (!await isPasswordFillAllowed(tab.url)) {
             return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS page" });
           }
           const detailsOnly = msg.mode === 'details';
@@ -810,7 +817,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             return sendResponse({ ok: false, error: "no active tab" });
           }
           const host = registrableHost(tab.url);
-          if (!/^https:\/\//i.test(tab.url) && !isLocalDevHost(host)) {
+          if (!await isPasswordFillAllowed(tab.url)) {
             return sendResponse({ ok: false, error: "refusing to read a verification code on a non-HTTPS page" });
           }
           await ensureConnected();

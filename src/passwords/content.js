@@ -104,7 +104,7 @@ let pageInactive = false;
 
 function applySitePreferences(stored) {
   const next = sitePreferencesFor(stored, location.hostname.toLowerCase());
-  if (next.suggestions !== sitePreferences.suggestions || next.privateSignup !== sitePreferences.privateSignup) {
+  if (next.suggestions !== sitePreferences.suggestions || next.privateSignup !== sitePreferences.privateSignup || next.allowHttp !== sitePreferences.allowHttp) {
     sitePreferences = next;
     offerSeq += 1;
     aliasLookupSeq += 1;

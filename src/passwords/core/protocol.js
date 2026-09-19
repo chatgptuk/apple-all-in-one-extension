@@ -24,6 +24,10 @@ const VERSION = "1.0";
 const EMPTY_LOOKUP_RETRY_MS = 120;
 const LOOKUP_QUEUE_TIMEOUT_MS = 2500;
 const INTERACTIVE_SECRET_TIMEOUT_MS = 60_000;
+// Metadata can be slow after wake or while Apple's UI is busy. Stop the caller's
+// spinner after 5s, but allow 25s to drain that exact reply before ending SRP.
+const METADATA_DRAIN_MS = 25_000;
+const NATIVE_EVENT_REASONS = new Set(['connected', 'unlocked', 'metadata_slow', 'metadata_drained', 'response_timeout', 'helper_exited', 'host_unavailable', 'transport_error', 'connection_closed', 'passwords_disabled', 'relogin_required', 'session_expired', 'incompatible_helper']);
 // how long we still trust a code the Mac put on screen. past this we re-prompt rather than
 // verify against a challenge the user has probably lost track of
 const CHALLENGE_TTL_MS = 3 * 60_000;
@@ -57,8 +61,17 @@ export const State = {
   Disconnected: "disconnected",
   NeedsPin: "needs_pin", // challenge issued, waiting for the user's PIN
   Unlocked: "unlocked", // session key established
-  NoHelper: "no_helper", // native host missing
+  NoHelper: "no_helper", // native host missing, forbidden, or incompatible
 };
+
+function nativeConnectionFailureState(error) {
+  const message = String(error?.message ?? error ?? '');
+  // Chrome also mentions "host" for transient failures, e.g. "Native host has
+  // exited." Only installation/registration/permission errors imply NoHelper.
+  return /specified native messaging host not found|native messaging host .+ is not registered|access to the specified native messaging host is forbidden|invalid native messaging host name specified/i.test(message)
+    ? State.NoHelper
+    : State.Disconnected;
+}
 
 function jsonToBase64(obj) {
   return bytesToBase64(new TextEncoder().encode(JSON.stringify(obj)));
@@ -89,6 +102,8 @@ export class ApplePasswords {
     this._challengeGen = 0; // bumped per challenge, so a queued verify can spot a stale one
     this._challengePending = undefined; // in-flight requestChallenge, shared by callers
     this._connecting = undefined;
+    this._startedAt = Date.now();
+    this._diagnosticEvents = [];
     // native protocol echoes the same cmd on replies with no correlation id, so two
     // in-flight requests with the same cmd collide. serialize all exchanges here
     this._lock = Promise.resolve();
@@ -126,9 +141,22 @@ export class ApplePasswords {
     this._onState = fn;
   }
 
+  _recordNativeEvent(reason, command) {
+    // Strict allowlists: never keep native messages, URLs, account names or data.
+    if (!NATIVE_EVENT_REASONS.has(reason)) return;
+    this._diagnosticEvents.push({ reason, at: Date.now(),
+      ...(Object.values(Command).includes(command) ? { command } : {}) });
+    if (this._diagnosticEvents.length > 20) this._diagnosticEvents.shift();
+  }
+
+  getDiagnostics() {
+    return { startedAt: this._startedAt, events: this._diagnosticEvents.map((event) => ({ ...event })) };
+  }
+
   _setState(s) {
     if (this.state === s) return;
     this.state = s;
+    if (s === State.Unlocked) this._recordNativeEvent('unlocked');
     try {
       this._onState(s);
     } catch (_) {}
@@ -143,28 +171,45 @@ export class ApplePasswords {
     );
   }
 
-  _send(cmd, body = {}, timeoutMs = 5000) {
+  _assertCanSend(cmd) {
     if (!this.port) throw new Error("connection closed");
     // replies carry no correlation id, so a second request on the same cmd would steal the
     // first one's reply. refuse instead of overwriting the waiter
-    if (this._waiters.has(cmd)) return Promise.reject(new Error("another request is already in flight"));
+    // A timed-out metadata reply must be consumed before ANY new request is sent.
+    // In particular, a retry with the same cmd must never receive the old reply.
+    if (this._waiters.has(cmd) || [...this._waiters.values()].some((w) => w.draining))
+      throw new Error("Apple Passwords is busy; retry the lookup");
+  }
+
+  _send(cmd, body = {}, timeoutMs = 5000) {
+    try { this._assertCanSend(cmd); } catch (error) { return Promise.reject(error); }
     return new Promise((resolve, reject) => {
-      const entry = { resolve, reject, timer: null };
+      const entry = { resolve, reject, timer: null, draining: false };
       entry.timer =
         timeoutMs == null
           ? null
           : setTimeout(() => {
-              // The helper does not echo request IDs. A late reply on this port
-              // cannot safely be distinguished from the next same-command reply.
               if (this._waiters.get(cmd) === entry) {
-                this._retireConnection(new Error("timeout waiting for response"));
+                const error = new Error("timeout waiting for response");
+                if (cmd === Command.GET_LOGIN_NAMES_FOR_URL || cmd === Command.GET_ONE_TIME_CODES) {
+                  entry.draining = true;
+                  this._recordNativeEvent('metadata_slow', cmd);
+                  entry.timer = setTimeout(() => {
+                    if (this._waiters.get(cmd) === entry)
+                      this._retireConnection(error, State.Disconnected, 'response_timeout', cmd);
+                  }, METADATA_DRAIN_MS);
+                  reject(error);
+                } else {
+                  // Secret reads and handshakes still fail closed immediately.
+                  this._retireConnection(error, State.Disconnected, 'response_timeout', cmd);
+                }
               }
             }, timeoutMs);
       this._waiters.set(cmd, entry);
       try {
         this.port.postMessage({ cmd, ...body });
       } catch (e) {
-        this._retireConnection(e);
+        this._retireConnection(e, State.Disconnected, 'transport_error', cmd);
       }
     });
   }
@@ -177,10 +222,12 @@ export class ApplePasswords {
     this._waiters.clear();
   }
 
-  _retireConnection(error = new Error('connection closed'), state = State.Disconnected) {
+  _retireConnection(error = new Error('connection closed'), state = State.Disconnected, reason = 'connection_closed', command) {
+    this._recordNativeEvent(reason, command);
     const port = this.port;
     this.port = undefined;
     this.session = undefined;
+    this.capabilities = undefined;
     this._challengeAt = 0;
     this._challengeGen++;
     this._rejectWaiters(error);
@@ -191,13 +238,18 @@ export class ApplePasswords {
   _dispatch(message, sourcePort = this.port) {
     if (!this.port || sourcePort !== this.port) return;
     if (message.cmd === Command.PASSWORDS_DISABLED || message.cmd === Command.RELOGIN_NEEDED) {
-      this._retireConnection(new Error('Apple Passwords session expired'));
+      this._retireConnection(new Error('Apple Passwords session expired'), State.Disconnected,
+        message.cmd === Command.PASSWORDS_DISABLED ? 'passwords_disabled' : 'relogin_required', message.cmd);
       return;
     }
     const w = this._waiters.get(message.cmd);
     if (w) {
       this._waiters.delete(message.cmd);
       if (w.timer) clearTimeout(w.timer);
+      if (w.draining) {
+        this._recordNativeEvent('metadata_drained', message.cmd);
+        return; // discard late payload; never deliver it to an abandoned caller
+      }
       w.resolve(message);
     }
   }
@@ -212,7 +264,8 @@ export class ApplePasswords {
       try {
         port = chrome.runtime.connectNative(NATIVE_HOST);
       } catch (e) {
-        this._setState(State.NoHelper);
+        const state = nativeConnectionFailureState(e);
+        this._retireConnection(e, state, state === State.NoHelper ? 'host_unavailable' : 'transport_error');
         return reject(e);
       }
       this.port = port;
@@ -221,8 +274,9 @@ export class ApplePasswords {
       port.onDisconnect.addListener(() => {
         const err = chrome.runtime.lastError?.message;
         if (this.port !== port) return;
-        this._retireConnection(new Error(err || 'connection closed'),
-          err && /not found|forbidden|host/i.test(err) ? State.NoHelper : State.Disconnected);
+        const state = nativeConnectionFailureState(err);
+        this._retireConnection(new Error(err || 'connection closed'), state,
+          state === State.NoHelper ? 'host_unavailable' : /native host has exited/i.test(err || '') ? 'helper_exited' : 'transport_error');
       });
 
       this._send(Command.GET_CAPABILITIES)
@@ -237,14 +291,20 @@ export class ApplePasswords {
             this.capabilities.secretSessionVersion !== SecretSessionVersion.SRPWithRFCVerification
           ) {
             const error = new Error("unsupported capabilities (expected SRP RFC verification)");
-            this._retireConnection(error, State.NoHelper);
+            this._retireConnection(error, State.NoHelper, 'incompatible_helper');
             return reject(error);
           }
           this.session = new SRPSession(this.capabilities.shouldUseBase64);
           this._setState(State.NeedsPin);
+          this._recordNativeEvent('connected');
           resolve();
         })
-        .catch(reject);
+        .catch((error) => {
+          // A failed initialization must not leave a zombie port that makes the
+          // next connect() return early. Never retire a newer replacement port.
+          if (this.port === port) this._retireConnection(error);
+          reject(error);
+        });
     });
     this._connecting = connecting;
     try { return await connecting; }
@@ -271,7 +331,13 @@ export class ApplePasswords {
     if (ifNeeded && (this.hasChallenge || this.state === State.Unlocked)) return Promise.resolve(false);
     // collapse concurrent requests: two prompts would race and only the last code works
     if (this._challengePending) return this._challengePending;
-    const p = this._withLock(() => this._issueChallenge());
+    const session = this.session;
+    const p = this._withLock(() => {
+      if (this.session !== session) throw new Error('session changed');
+      // Another UI may have finished unlocking while this request was queued.
+      if (ifNeeded && (this.hasChallenge || this.ready)) return false;
+      return this._issueChallenge();
+    }, { queueTimeoutMs: LOOKUP_QUEUE_TIMEOUT_MS });
     this._challengePending = p;
     const clear = () => {
       if (this._challengePending === p) this._challengePending = undefined;
@@ -281,6 +347,8 @@ export class ApplePasswords {
   }
 
   async _issueChallenge() {
+    // A pending late metadata reply must not let a failed handshake reset keys.
+    this._assertCanSend(Command.HANDSHAKE);
     // reset prior handshake state
     this.session.serverPublicKey = undefined;
     this.session.salt = undefined;
@@ -395,7 +463,13 @@ export class ApplePasswords {
     if (this.session !== session || !smsg || smsg.TID !== session.username) throw new Error("response for another session");
     const data = await session.decrypt(session.deserialize(smsg.SDATA));
     if (this.session !== session) throw new Error('session changed');
-    return JSON.parse(bytesToUtf8(data));
+    const result = JSON.parse(bytesToUtf8(data));
+    if (result.STATUS === QueryStatus.InvalidSession) {
+      const error = new Error('Apple Passwords session expired');
+      this._retireConnection(error, State.Disconnected, 'session_expired', cmd);
+      throw error;
+    }
+    return result;
   }
 
   async getLoginNamesForURL(tabId, url) {
@@ -519,6 +593,7 @@ export class ApplePasswords {
     if (!password) throw new Error("no password to save");
     const { hostname } = new URL(url);
     return this._withLock(async () => {
+      this._assertCanSend(Command.SET_PASSWORD_FOR_LOGIN_NAME_URL);
       const sdata = this.session.serialize(
         await this.session.encrypt({
           ACT: Action.MAYBE_ADD,
@@ -542,6 +617,7 @@ export class ApplePasswords {
       // Do not install a waiter or apply the reply-required timeout policy here.
       // Any later cmd-6 acknowledgment is unsolicited and cannot steal a reply.
       if (!this.ready) throw new Error('not unlocked');
+      this._assertCanSend(Command.SET_PASSWORD_FOR_LOGIN_NAME_URL);
       this.port.postMessage({ cmd: Command.SET_PASSWORD_FOR_LOGIN_NAME_URL, ...body });
       return true;
     });

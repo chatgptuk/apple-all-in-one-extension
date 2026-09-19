@@ -11,7 +11,7 @@ An independent, open-source Chromium extension that brings Apple Passwords, pass
 
 This project is not endorsed by, sponsored by, authorized by, or affiliated with Apple Inc. Apple, iCloud, iCloud+, Apple Passwords, and related names are Apple trademarks used here only to describe compatibility and the services being accessed.
 
-**Current version:** 1.3.2<br>
+**Current version:** 1.3.7<br>
 **Repository:** https://github.com/chatgptuk/apple-all-in-one-extension
 
 ## Who this project is for
@@ -29,6 +29,10 @@ It is not currently suitable for Chrome Web Store submission, managed enterprise
 ## Features
 
 ### Apple Passwords
+
+If the native helper disconnects temporarily, reopen the popup to reconnect. The unavailable-helper screen also offers **Retry Connection**, without reloading the extension. macOS may still require unlocking the new session.
+
+A slow account/code-list query no longer immediately discards the unlocked session: after the 5-second UI timeout, the connection allows up to 25 more seconds to discard its late reply before accepting new requests. A missing reply beyond that limit, or an explicit Apple session reset, still requires reconnecting. **Website Settings & Status → Copy Safe Diagnostic Report** includes bounded connection events for the current background run, without accounts, passwords, codes, URLs or raw native messages.
 
 - Connects to the macOS `com.apple.passwordmanager` native helper.
 - Uses the Open Passwords SRP/AES-GCM protocol for encrypted credential queries.
@@ -48,7 +52,10 @@ Save feedback distinguishes waiting for unlock, submitted to Apple, failed, and 
 ### iCloud+ Hide My Email
 
 - Creates, reserves, fills, searches, activates, deactivates, and deletes private addresses.
+- New addresses default to **Create Address** without filling the page; **Create and Fill** is a separate action. A successfully created address is automatically copied, with a manual retry if copying fails. This uses clipboard-write permission, not clipboard-read permission.
+- The candidate address and draft stay in place when the same iCloud session refreshes; only **Generate another address** requests a replacement while this page stays open.
 - Edits the label and optional note of an existing private address from its detail view.
+- Switches to the previous or next address directly in details, following the filtered and sorted list you opened. Unsaved edits are confirmed before leaving.
 - Reuses the address list from a two-minute session cache; stale data is shown immediately while a silent refresh runs.
 - Supports direct deletion of active aliases by performing `deactivate → delete`.
 - Supports multi-select bulk deactivate/delete with retryable partial failures.
@@ -117,6 +124,7 @@ npm run watch
 - The Apple Passwords six-digit pairing code belongs to the current native session. Its connected native-messaging port keeps the worker active; there is no perpetual polling alarm. This cannot guarantee that a real browser/native-session restart will remain unlocked.
 - Hide My Email can automatically re-check the existing trusted iCloud browser session. If Apple requires authentication or 2FA, the extension stops and sends the user to iCloud.com; it does not attempt to bypass that requirement.
 - **Website Settings & Status** shows the two subsystems separately and provides recovery actions and a diagnostic report containing only version, state, operation names, reason codes, and timestamps—not accounts, secrets, or page URLs. iCloud status reflects the locally known session, not a fresh server check.
+- Password and verification-code filling is allowed on HTTP pages by default. To block it for one hostname, turn off **Website Settings & Status → Allow filling on HTTP pages**. This covers all ports on that exact hostname, not its subdomains, and does not block HTTPS. HTTP is unencrypted and can expose passwords and codes to interception; Touch ID and document/field checks still apply. This setting does not change the existing HTTPS requirement for saving passwords (except local development sites).
 
 ## Language
 
