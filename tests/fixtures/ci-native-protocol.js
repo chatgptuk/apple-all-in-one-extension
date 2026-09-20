@@ -1,6 +1,9 @@
 // CI fixture only. Copied over the protocol adapter in a throwaway extension.
 // No native host is contacted and no Apple data is read.
 export const State = { Disconnected: 'disconnected', NeedsPin: 'needs_pin', Unlocked: 'unlocked', NoHelper: 'no_helper' };
+// The synthetic adapter emits no native lifecycle events. Worker-start markers
+// are still supplied by the real diagnostic journal.
+export const safeNativeEvent = () => undefined;
 globalThis.__CI_NATIVE__ = { reads: 0, delayMs: 0, startedAt: Date.now() };
 export class ApplePasswords {
   constructor() { this.state = State.Unlocked; this.ready = true; this.hasChallenge = false; }

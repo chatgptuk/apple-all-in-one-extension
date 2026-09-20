@@ -104,7 +104,10 @@ test('a draining reply blocks a fresh challenge and save before they reset keys 
   const pending = assert.rejects(client._send(Command.GET_LOGIN_NAMES_FOR_URL), /timeout/);
   t.mock.timers.tick(5000);
   await pending;
+  assert.equal(await client.requestChallenge(), false, 'unlock requests are harmless when already unlocked');
+  client.state = State.NeedsPin;
   await assert.rejects(client.requestChallenge(), /busy/);
+  client.state = State.Unlocked;
   await assert.rejects(client.saveLogin(1, 'https://example.test', 'synthetic', 'synthetic'), /busy/);
   assert.equal(client.session, session);
   assert.equal(session.sharedKey, key);
@@ -155,6 +158,138 @@ test('a queued if-needed challenge cannot reset a session another UI already unl
   assert.equal(client.ready, true);
   assert.equal(port.sent.length, 0);
 });
+
+test('a stale explicit new-code request cannot reset an unlocked session', async (t) => {
+  const { client, port } = unlockedClient(t);
+  const session = client.session;
+  const key = session.sharedKey;
+  assert.equal(await client.requestChallenge(), false);
+  assert.equal(client.ready, true);
+  assert.equal(session.sharedKey, key);
+  assert.equal(port.sent.length, 0);
+});
+
+test('a queued explicit new-code request cannot undo another UI unlocking', async (t) => {
+  const { client, port } = unlockedClient(t);
+  const queue = deferred();
+  client._lock = queue.promise;
+  client.state = State.NeedsPin;
+  client.session.sharedKey = undefined;
+  const pending = client.requestChallenge();
+  client.session.sharedKey = 'synthetic-unlocked-key';
+  client._setState(State.Unlocked);
+  queue.resolve();
+  assert.equal(await pending, false);
+  assert.equal(client.ready, true);
+  assert.equal(port.sent.length, 0);
+});
+
+test('a late PIN submission does not re-pair an already unlocked session', async (t) => {
+  const { client, port } = unlockedClient(t);
+  const session = client.session;
+  const key = session.sharedKey;
+  await client.verifyPin('123456');
+  assert.equal(client.ready, true);
+  assert.equal(session.sharedKey, key);
+  assert.equal(port.sent.length, 0);
+});
+
+function prepareVerification(client) {
+  client.state = State.NeedsPin;
+  client._challengeAt = Date.now();
+  client.session = {
+    username: 'synthetic-session', serverPublicKey: 1n, salt: new Uint8Array(1),
+    sharedKey: undefined, serialize: (value) => value, deserialize: (value) => value,
+    async setSharedKey() { this.sharedKey = 'synthetic-key'; },
+    computeM: async () => 'synthetic-proof', computeHMAC: async () => new Uint8Array([42]),
+  };
+  let sends = 0;
+  client._send = async () => {
+    sends++;
+    return { payload: { PAKE: Buffer.from(JSON.stringify({
+      TID: 'synthetic-session', MSG: 3, HAMK: [42],
+    })).toString('base64') } };
+  };
+  return { session: client.session, sends: () => sends };
+}
+
+test('two simultaneous PIN submissions perform only one verification', async (t) => {
+  const { client } = unlockedClient(t);
+  const h = prepareVerification(client);
+  await Promise.all([client.verifyPin('123456'), client.verifyPin('123456')]);
+  assert.equal(client.ready, true);
+  assert.equal(h.sends(), 1);
+});
+
+test('a failed verification burns only its own challenge and skips duplicate queued submissions', async (t) => {
+  const { client } = unlockedClient(t);
+  const h = prepareVerification(client);
+  let sends = 0;
+  client._send = async () => {
+    sends++;
+    return { payload: { PAKE: Buffer.from(JSON.stringify({ TID: 'synthetic-session', MSG: 3, ErrCode: 1 })).toString('base64') } };
+  };
+  await Promise.all([
+    assert.rejects(client.verifyPin('000000'), /Incorrect code/),
+    assert.rejects(client.verifyPin('000000'), /new code/),
+  ]);
+  assert.equal(sends, 1);
+  assert.equal(client.ready, false);
+  assert.equal(client.hasChallenge, false);
+  assert.equal(h.session.sharedKey, undefined);
+  assert.equal(client.getDiagnostics().events.at(-1).reason, 'verification_failed');
+});
+
+test('a queued PIN attempt expires without later submitting or clearing the challenge', async (t) => {
+  const { client } = unlockedClient(t);
+  const h = prepareVerification(client);
+  const queue = deferred();
+  client._lock = queue.promise;
+  const pending = assert.rejects(client.verifyPin('123456'), /busy/);
+  t.mock.timers.tick(2500);
+  await pending;
+  queue.resolve();
+  await client._lock;
+  assert.equal(h.sends(), 0);
+  assert.equal(client.hasChallenge, true);
+});
+
+test('a fresh challenge is still issued for a genuinely locked session', async (t) => {
+  const { client } = unlockedClient(t);
+  prepareVerification(client);
+  client.session.clientPublicKeyBytes = new Uint8Array([1]);
+  client.session.deserialize = () => new Uint8Array([1]);
+  client.session.setServerPublicKey = function (B, salt) { this.serverPublicKey = B; this.salt = salt; };
+  client._send = async () => ({ payload: { PAKE: Buffer.from(JSON.stringify({ TID: 'synthetic-session', MSG: 1, PROTO: 1, B: 'synthetic', s: 'synthetic' })).toString('base64') } });
+  assert.equal(await client.requestChallenge(), true);
+  assert.equal(client.ready, false);
+  assert.equal(client.hasChallenge, true);
+  assert.equal(client.getDiagnostics().events.at(-1).reason, 'challenge_requested');
+});
+
+for (const phase of ['setSharedKey', 'computeM', 'computeHMAC']) {
+  test(`retirement during ${phase} cannot clear or unlock a replacement session`, async (t) => {
+    const { client } = unlockedClient(t);
+    const h = prepareVerification(client);
+    const started = deferred(), gate = deferred();
+    h.session[phase] = async () => { started.resolve(); await gate.promise; return new Uint8Array([42]); };
+    const pending = assert.rejects(client.verifyPin('123456'), /session changed/);
+    await started.promise;
+    client._retireConnection();
+    const replacement = { sharedKey: 'replacement-key', serverPublicKey: 2n, salt: 'replacement-salt' };
+    client.session = replacement;
+    client.port = { disconnect() {} };
+    client._challengeAt = Date.now();
+    client.state = State.NeedsPin;
+    gate.resolve();
+    await pending;
+    assert.equal(client.state, State.NeedsPin, 'stale proof never unlocks the replacement');
+    assert.equal(replacement.sharedKey, 'replacement-key');
+    assert.equal(replacement.salt, 'replacement-salt');
+    assert.equal(client.hasChallenge, true);
+    assert.equal(h.sends(), phase === 'computeHMAC' ? 1 : 0);
+  });
+}
 
 test('a challenge queued for a retired session cannot reset its replacement', async (t) => {
   const { client, port } = unlockedClient(t);

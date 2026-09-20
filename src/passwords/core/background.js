@@ -5,10 +5,12 @@ import { orderLoginsForHost, describeLoginCandidatesForHost } from "./login-orde
 import { createPasswordCache } from "./password-cache.js";
 import { accountKey, selectAccountCode } from './account-identity.js';
 import { createPendingSaveQueue } from './pending-saves.js';
+import { createNativeDiagnosticJournal } from './native-diagnostics.js';
 import { validPasswordRequest, failureReason, failureMessage, failureResult, normalizeSitePreferences } from '../message-contracts.js';
 import { SITE_PREFERENCES_KEY, sitePreferencesFor, validSiteHost } from '../site-preferences.js';
 
-const client = new ApplePasswords();
+const nativeDiagnosticJournal = createNativeDiagnosticJournal(chrome.storage.session);
+const client = new ApplePasswords({ onDiagnosticEvent: nativeDiagnosticJournal.record });
 const recentDiagnosticEvents = [];
 const saveStatusByTab = new Map();
 function recordDiagnostic(operation, reason) {
@@ -405,7 +407,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, report: {
             version: chrome.runtime.getManifest().version,
             passwordState: client.state,
-            nativeConnection: client.getDiagnostics(),
+            nativeConnection: { ...client.getDiagnostics(), history: await nativeDiagnosticJournal.read() },
             icloudState: clientState ? 'signed_in' : 'signed_out',
             recentEvents: recentDiagnosticEvents.slice(),
             pendingSaveCount: pendingSaves.size,
@@ -719,10 +721,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             let newCode = e?.code === "challenge_reissued";
             if (!newCode && !client.hasChallenge && client.state === State.NeedsPin) {
               try {
-                await withTimeout(client.requestChallenge(), 8000, "challenge timed out");
-                newCode = true;
+                await withTimeout(client.requestChallenge({ ifNeeded: true }), 8000, "challenge timed out");
+                newCode = client.hasChallenge;
               } catch (_) {}
             }
+            // Another UI can finish unlocking while this stale attempt/recovery
+            // was queued. Do not send it back to the PIN screen or replace its code.
+            if (client.ready) return sendResponse({ ok: true, state: client.state });
             return sendResponse({
               ok: false,
               error: String(e?.message ?? e),

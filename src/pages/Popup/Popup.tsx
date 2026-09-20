@@ -633,6 +633,7 @@ const PasswordsView = () => {
   const [otpNow, setOtpNow] = useState(Date.now());
   const pinVerifyInFlight = useRef(false);
   const siteLoadSequence = useRef(0);
+  const siteLoadPending = useRef<Promise<void> | null>(null);
   const detailLoadSequence = useRef(0);
   const displayedSiteKey = useRef('');
 
@@ -651,9 +652,10 @@ const PasswordsView = () => {
     setCopiedDetail(undefined);
   };
 
-  const loadSiteItems = async () => {
+  const querySiteItems = async () => {
     const sequence = ++siteLoadSequence.current;
     const tab = await getActiveTabForPopup();
+    if (sequence !== siteLoadSequence.current) return;
     const siteKey = `${tab?.id ?? 'none'}:${tab?.url || ''}`;
     if (displayedSiteKey.current !== siteKey) {
       displayedSiteKey.current = siteKey;
@@ -680,6 +682,7 @@ const PasswordsView = () => {
       if (sequence !== siteLoadSequence.current) return;
 
       const currentTab = await getActiveTabForPopup();
+      if (sequence !== siteLoadSequence.current) return;
       if (currentTab?.id !== tab?.id || currentTab?.url !== tab?.url) return;
 
       if (loginResult?.ok) {
@@ -690,6 +693,9 @@ const PasswordsView = () => {
           'Could not query Apple Passwords. Your saved items were not reported as empty.',
           '无法查询 Apple 密码；扩展不会再把查询失败显示成“没有已保存项目”。'
         ));
+        // Do not reconnect/re-query OTP after the first native request failed.
+        // It hides the original failure behind a second, generic "locked" error.
+        return;
       }
     } finally {
       if (sequence === siteLoadSequence.current) setSiteItemsLoading(false);
@@ -705,6 +711,7 @@ const PasswordsView = () => {
       if (sequence !== siteLoadSequence.current) return;
 
       const currentTab = await getActiveTabForPopup();
+      if (sequence !== siteLoadSequence.current) return;
       if (currentTab?.id !== tab?.id || currentTab?.url !== tab?.url) return;
 
       if (otpResult?.ok) {
@@ -720,8 +727,20 @@ const PasswordsView = () => {
     }
   };
 
-  const refreshState = async () => {
+  const loadSiteItems = () => {
+    // The unlock broadcast and verify response arrive independently. Share one
+    // metadata load instead of queuing two login + OTP queries for the same view.
+    if (siteLoadPending.current) return siteLoadPending.current;
+    const pending = querySiteItems();
+    siteLoadPending.current = pending;
+    const clear = () => { if (siteLoadPending.current === pending) siteLoadPending.current = null; };
+    pending.then(clear, clear);
+    return pending;
+  };
+
+  const refreshState = async (isCurrent = () => true) => {
     const res = await sendPasswordMessage<{ state?: PasswordState; hasChallenge?: boolean }>({ type: 'getState' });
+    if (!isCurrent()) return;
     const next = res?.state || 'disconnected';
     setState(next);
     setHasChallenge(!!res?.hasChallenge);
@@ -739,7 +758,8 @@ const PasswordsView = () => {
     setBusy(undefined);
     if (res?.ok) {
       setState(res.state || 'needs_pin');
-      setHasChallenge(res.hasChallenge !== false);
+      setHasChallenge(res.state !== 'unlocked' && res.hasChallenge !== false);
+      if (res.state === 'unlocked') await loadSiteItems();
       return true;
     }
     if (res?.state) { setState(res.state); setHasChallenge(!!res.hasChallenge); }
@@ -764,12 +784,14 @@ const PasswordsView = () => {
   };
 
   useEffect(() => {
+    let cancelled = false;
     // Opening the toolbar is itself an explicit user gesture. Restore the convenient behavior
     // from v1.2.4: connect to Apple Passwords and request a challenge automatically on the
     // first popup open, while keeping background getState() a pure read.
     (async () => {
       try {
-        const current = await refreshState();
+        const current = await refreshState(() => !cancelled);
+        if (cancelled || !current) return;
         if (current.state === 'unlocked') return;
 
         let nextState: PasswordState = current.state;
@@ -777,6 +799,7 @@ const PasswordsView = () => {
         if (nextState === 'disconnected' || nextState === 'no_helper') {
           setBusy('connect');
           const connected = await sendPasswordMessage<{ ok?: boolean; state?: PasswordState; hasChallenge?: boolean; error?: string }>({ type: 'connect' });
+          if (cancelled) return;
           setBusy(undefined);
           nextState = connected?.state || 'disconnected';
           hasLiveChallenge = !!connected?.hasChallenge;
@@ -786,6 +809,7 @@ const PasswordsView = () => {
             setError(connected?.error || tr('Could not connect to Apple Passwords. Please retry.', '暂时无法连接 Apple 密码，请重试。'));
             return;
           }
+          if (nextState === 'unlocked') await loadSiteItems();
         }
 
         if (nextState === 'needs_pin' && !hasLiveChallenge) {
@@ -794,16 +818,19 @@ const PasswordsView = () => {
             type: 'requestChallenge',
             ifNeeded: true,
           });
+          if (cancelled) return;
           setBusy(undefined);
           if (challenged?.ok) {
             setState(challenged.state || 'needs_pin');
-            setHasChallenge(challenged.hasChallenge !== false);
+            setHasChallenge(challenged.state !== 'unlocked' && challenged.hasChallenge !== false);
+            if (challenged.state === 'unlocked') await loadSiteItems();
           } else {
             if (challenged?.state) { setState(challenged.state); setHasChallenge(!!challenged.hasChallenge); }
             setError(challenged?.error || tr('Could not request an Apple Passwords code.', '无法请求 Apple 密码验证码。'));
           }
         }
       } catch (e) {
+        if (cancelled) return;
         setBusy(undefined);
         setError(String(e));
       }
@@ -814,10 +841,26 @@ const PasswordsView = () => {
         setState(msg.state);
         if (msg.state !== 'needs_pin') setHasChallenge(false);
         if (msg.state === 'unlocked') loadSiteItems().catch(console.debug);
+        else {
+          siteLoadSequence.current += 1;
+          siteLoadPending.current = null;
+          setSiteItemsLoading(false);
+          setOtpItemsLoading(false);
+          setLogins([]);
+          setOtps([]);
+          clearLoginDetail();
+          setBusy(undefined);
+        }
       }
     };
     browser.runtime.onMessage.addListener(listener);
-    return () => browser.runtime.onMessage.removeListener(listener);
+    return () => {
+      cancelled = true;
+      siteLoadSequence.current += 1;
+      detailLoadSequence.current += 1;
+      siteLoadPending.current = null;
+      browser.runtime.onMessage.removeListener(listener);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

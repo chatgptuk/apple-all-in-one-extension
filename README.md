@@ -11,7 +11,7 @@ An independent, open-source Chromium extension that brings Apple Passwords, pass
 
 This project is not endorsed by, sponsored by, authorized by, or affiliated with Apple Inc. Apple, iCloud, iCloud+, Apple Passwords, and related names are Apple trademarks used here only to describe compatibility and the services being accessed.
 
-**Current version:** 1.3.7<br>
+**Current version:** 1.3.8<br>
 **Repository:** https://github.com/chatgptuk/apple-all-in-one-extension
 
 ## Who this project is for
@@ -32,7 +32,7 @@ It is not currently suitable for Chrome Web Store submission, managed enterprise
 
 If the native helper disconnects temporarily, reopen the popup to reconnect. The unavailable-helper screen also offers **Retry Connection**, without reloading the extension. macOS may still require unlocking the new session.
 
-A slow account/code-list query no longer immediately discards the unlocked session: after the 5-second UI timeout, the connection allows up to 25 more seconds to discard its late reply before accepting new requests. A missing reply beyond that limit, or an explicit Apple session reset, still requires reconnecting. **Website Settings & Status → Copy Safe Diagnostic Report** includes bounded connection events for the current background run, without accounts, passwords, codes, URLs or raw native messages.
+A slow account/code-list query no longer immediately discards the unlocked session: after the 5-second UI timeout, the connection allows up to 25 more seconds to discard its late reply before accepting new requests. A missing reply beyond that limit, or an explicit Apple session reset, still requires reconnecting. Stale unlock controls and duplicate code submissions cannot reset an already unlocked session. **Website Settings & Status → Copy Safe Diagnostic Report** includes bounded connection events and worker-start markers retained in browser session memory across background-worker restarts, without accounts, passwords, codes, URLs or raw native messages. It does not retain or restore authentication keys.
 
 - Connects to the macOS `com.apple.passwordmanager` native helper.
 - Uses the Open Passwords SRP/AES-GCM protocol for encrypted credential queries.

@@ -62,6 +62,7 @@ function nativeHarness(t, attempts = []) {
     saveStatusByTab: new Map(),
     pendingSaves: { size: 0 },
     recentDiagnosticEvents: [],
+    nativeDiagnosticJournal: { read: async () => [] },
   });
   const sender = { id: chrome.runtime.id, url: chrome.runtime.getURL('popup.html') };
   const request = (type, from = sender) => new Promise((resolve) => listener({ type }, from, resolve));

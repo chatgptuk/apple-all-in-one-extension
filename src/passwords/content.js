@@ -1038,7 +1038,8 @@ async function handleUiAction(msg) {
       return;
     }
     const res = await sendRuntimeMessage({ type: 'requestChallenge', ifNeeded: true }).catch((e) => ({ ok: false, error: String(e) }));
-    if (res?.ok) postUi({ type: 'pin-ready' });
+    if (res?.ok && res.state === 'unlocked') await reloadUiState();
+    else if (res?.ok) postUi({ type: 'pin-ready' });
     else postUi({ type: 'error', message: res?.error || L('Could not request an Apple Passwords code.', '无法请求 Apple 密码验证码。') });
     return;
   }
@@ -1046,7 +1047,8 @@ async function handleUiAction(msg) {
   if (msg.type === 'new-code') {
     if (window !== window.top) return;
     const res = await sendRuntimeMessage({ type: 'requestChallenge' }).catch((e) => ({ ok: false, error: String(e) }));
-    postUi(res?.ok ? { type: 'pin-ready', fresh: true } : { type: 'error', message: res?.error || L('Could not request a new code.', '无法请求新的验证码。') });
+    if (res?.ok && res.state === 'unlocked') await reloadUiState();
+    else postUi(res?.ok ? { type: 'pin-ready', fresh: true } : { type: 'error', message: res?.error || L('Could not request a new code.', '无法请求新的验证码。') });
     return;
   }
 

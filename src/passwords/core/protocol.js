@@ -27,7 +27,7 @@ const INTERACTIVE_SECRET_TIMEOUT_MS = 60_000;
 // Metadata can be slow after wake or while Apple's UI is busy. Stop the caller's
 // spinner after 5s, but allow 25s to drain that exact reply before ending SRP.
 const METADATA_DRAIN_MS = 25_000;
-const NATIVE_EVENT_REASONS = new Set(['connected', 'unlocked', 'metadata_slow', 'metadata_drained', 'response_timeout', 'helper_exited', 'host_unavailable', 'transport_error', 'connection_closed', 'passwords_disabled', 'relogin_required', 'session_expired', 'incompatible_helper']);
+const NATIVE_EVENT_REASONS = new Set(['connected', 'unlocked', 'challenge_requested', 'verification_failed', 'metadata_slow', 'metadata_drained', 'response_timeout', 'helper_exited', 'host_unavailable', 'transport_error', 'connection_closed', 'passwords_disabled', 'relogin_required', 'session_expired', 'incompatible_helper']);
 // how long we still trust a code the Mac put on screen. past this we re-prompt rather than
 // verify against a challenge the user has probably lost track of
 const CHALLENGE_TTL_MS = 3 * 60_000;
@@ -64,6 +64,12 @@ export const State = {
   NoHelper: "no_helper", // native host missing, forbidden, or incompatible
 };
 
+export function safeNativeEvent(event) {
+  if (!event || !NATIVE_EVENT_REASONS.has(event.reason) || !Number.isFinite(event.at) || event.at < 0) return undefined;
+  return { reason: event.reason, at: event.at,
+    ...(Object.values(Command).includes(event.command) ? { command: event.command } : {}) };
+}
+
 function nativeConnectionFailureState(error) {
   const message = String(error?.message ?? error ?? '');
   // Chrome also mentions "host" for transient failures, e.g. "Native host has
@@ -91,7 +97,7 @@ function entryPassword(entry) {
 }
 
 export class ApplePasswords {
-  constructor() {
+  constructor({ onDiagnosticEvent = (_event) => {} } = {}) {
     this.port = undefined;
     this.session = undefined;
     this.capabilities = undefined;
@@ -104,6 +110,7 @@ export class ApplePasswords {
     this._connecting = undefined;
     this._startedAt = Date.now();
     this._diagnosticEvents = [];
+    this._onDiagnosticEvent = onDiagnosticEvent;
     // native protocol echoes the same cmd on replies with no correlation id, so two
     // in-flight requests with the same cmd collide. serialize all exchanges here
     this._lock = Promise.resolve();
@@ -143,10 +150,11 @@ export class ApplePasswords {
 
   _recordNativeEvent(reason, command) {
     // Strict allowlists: never keep native messages, URLs, account names or data.
-    if (!NATIVE_EVENT_REASONS.has(reason)) return;
-    this._diagnosticEvents.push({ reason, at: Date.now(),
-      ...(Object.values(Command).includes(command) ? { command } : {}) });
+    const event = safeNativeEvent({ reason, at: Date.now(), command });
+    if (!event) return;
+    this._diagnosticEvents.push(event);
     if (this._diagnosticEvents.length > 20) this._diagnosticEvents.shift();
+    try { this._onDiagnosticEvent({ ...event }); } catch (_) {}
   }
 
   getDiagnostics() {
@@ -328,14 +336,16 @@ export class ApplePasswords {
   // silently invalidating the one the user is reading
   requestChallenge({ ifNeeded = false } = {}) {
     if (!this.session) return Promise.reject(new Error("not connected"));
-    if (ifNeeded && (this.hasChallenge || this.state === State.Unlocked)) return Promise.resolve(false);
+    // An old inline picker can outlive a successful toolbar unlock. Even its
+    // explicit "new code" button must not re-pair an already authenticated session.
+    if (this.ready || (ifNeeded && this.hasChallenge)) return Promise.resolve(false);
     // collapse concurrent requests: two prompts would race and only the last code works
     if (this._challengePending) return this._challengePending;
     const session = this.session;
     const p = this._withLock(() => {
       if (this.session !== session) throw new Error('session changed');
       // Another UI may have finished unlocking while this request was queued.
-      if (ifNeeded && (this.hasChallenge || this.ready)) return false;
+      if (this.ready || (ifNeeded && this.hasChallenge)) return false;
       return this._issueChallenge();
     }, { queueTimeoutMs: LOOKUP_QUEUE_TIMEOUT_MS });
     this._challengePending = p;
@@ -349,19 +359,22 @@ export class ApplePasswords {
   async _issueChallenge() {
     // A pending late metadata reply must not let a failed handshake reset keys.
     this._assertCanSend(Command.HANDSHAKE);
+    const session = this.session;
     // reset prior handshake state
-    this.session.serverPublicKey = undefined;
-    this.session.salt = undefined;
-    this.session.sharedKey = undefined;
-    this._challengeGen++;
+    session.serverPublicKey = undefined;
+    session.salt = undefined;
+    session.sharedKey = undefined;
+    this._challengeAt = 0;
+    const gen = ++this._challengeGen;
+    this._recordNativeEvent('challenge_requested', Command.HANDSHAKE);
 
     const reply = await this._send(Command.HANDSHAKE, {
       msg: {
         QID: "m0",
         PAKE: jsonToBase64({
-          TID: this.session.username,
+          TID: session.username,
           MSG: MSGType.ClientKeyExchange,
-          A: this.session.serialize(this.session.clientPublicKeyBytes),
+          A: session.serialize(session.clientPublicKeyBytes),
           VER: VERSION,
           PROTO: [SecretSessionVersion.SRPWithRFCVerification],
         }),
@@ -369,15 +382,16 @@ export class ApplePasswords {
       },
     });
 
+    if (this.session !== session || this._challengeGen !== gen) throw new Error('session changed');
     const pake = JSON.parse(bytesToUtf8(base64ToBytes(reply.payload.PAKE)));
-    if (pake.TID !== this.session.username) throw new Error("challenge for another session");
+    if (pake.TID !== session.username) throw new Error("challenge for another session");
     if (pake.ErrCode !== undefined) throw new Error(`server hello error ${pake.ErrCode}`);
     if (pake.MSG.toString() !== MSGType.ServerKeyExchange.toString()) throw new Error("unexpected server message");
     if (pake.PROTO !== SecretSessionVersion.SRPWithRFCVerification) throw new Error("unsupported protocol");
 
-    const B = bytesToBigInt(this.session.deserialize(pake.B));
-    const s = this.session.deserialize(pake.s); // raw bytes, see setServerPublicKey
-    this.session.setServerPublicKey(B, s);
+    const B = bytesToBigInt(session.deserialize(pake.B));
+    const s = session.deserialize(pake.s); // raw bytes, see setServerPublicKey
+    session.setServerPublicKey(B, s);
     this._challengeAt = Date.now();
     this._setState(State.NeedsPin);
     return true;
@@ -387,38 +401,52 @@ export class ApplePasswords {
   // other challenge always fails, so never quietly swap the challenge underneath the user -
   // issue a fresh one and tell the caller to ask for the NEW code
   async verifyPin(pin) {
+    if (this.ready) return;
     if (!this.session) throw new Error("not connected");
     if (!this.hasChallenge) {
-      await this.requestChallenge();
+      await this.requestChallenge({ ifNeeded: true });
+      if (this.ready) return;
       throw challengeError("Enter the new code your Mac is showing now");
     }
+    const session = this.session;
     const gen = this._challengeGen;
     return this._withLock(async () => {
+      if (this.session !== session) throw new Error('session changed');
+      // A duplicate submission may have waited behind the successful one.
+      if (this.ready) return;
       // something re-issued while we queued: the typed code is for the old prompt
       if (gen !== this._challengeGen) throw challengeError("Enter the new code your Mac is showing now");
+      const assertCurrent = () => {
+        if (this.session !== session || gen !== this._challengeGen) throw new Error('session changed');
+      };
+      this._assertCanSend(Command.HANDSHAKE);
       try {
-        await this.session.setSharedKey(pin);
-        const m = await this.session.computeM();
+        await session.setSharedKey(pin);
+        assertCurrent();
+        const m = await session.computeM();
+        assertCurrent();
 
         const reply = await this._send(Command.HANDSHAKE, {
           msg: {
             QID: "m2",
             PAKE: jsonToBase64({
-              TID: this.session.username,
+              TID: session.username,
               MSG: MSGType.ClientVerification,
-              M: this.session.serialize(m, false),
+              M: session.serialize(m, false),
             }),
           },
         });
 
+        assertCurrent();
         const pake = JSON.parse(bytesToUtf8(base64ToBytes(reply.payload.PAKE)));
-        if (pake.TID !== this.session.username) throw new Error("verification for another session");
+        if (pake.TID !== session.username) throw new Error("verification for another session");
         if (pake.MSG.toString() !== MSGType.ServerVerification.toString()) throw new Error("unexpected server message");
         if (pake.ErrCode === 1) throw new Error("Incorrect code");
         if (pake.ErrCode !== 0 && pake.ErrCode !== undefined) throw new Error(`verification error ${pake.ErrCode}`);
 
-        const hamk = await this.session.computeHMAC(m);
-        if (!constantTimeEqual(this.session.deserialize(pake.HAMK), hamk))
+        const hamk = await session.computeHMAC(m);
+        assertCurrent();
+        if (!constantTimeEqual(session.deserialize(pake.HAMK), hamk))
           throw new Error("server HAMK mismatch");
 
         this._setState(State.Unlocked);
@@ -426,15 +454,17 @@ export class ApplePasswords {
         // the helper burns the challenge on a failed verify, so this code is dead now.
         // drop it - hasChallenge goes false and the next attempt gets a fresh prompt.
         // the session itself can be gone already if the port dropped mid-verify
-        if (this.session) {
-          this.session.sharedKey = undefined;
-          this.session.serverPublicKey = undefined;
-          this.session.salt = undefined;
+        if (this.session === session && gen === this._challengeGen) {
+          session.sharedKey = undefined;
+          session.serverPublicKey = undefined;
+          session.salt = undefined;
+          this._challengeAt = 0;
+          this._challengeGen++;
+          this._recordNativeEvent('verification_failed', Command.HANDSHAKE);
         }
-        this._challengeAt = 0;
         throw e;
       }
-    });
+    }, { queueTimeoutMs: LOOKUP_QUEUE_TIMEOUT_MS });
   }
 
   async _encryptedQuery(cmd, tabId, wireUrl, payloadBody, timeoutMs, options = {}) {
