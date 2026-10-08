@@ -125,7 +125,7 @@ test('management wiring scopes presentation and activity by account and labels f
 
 test('standalone manager hides password navigation and page filling, details-only mode is explicit', () => {
   const popup = read('src/pages/Popup/Popup.tsx');
-  assert.match(popup, /IS_MANAGER \? 'hide-email' : 'passwords'/);
+  assert.match(popup, /usePopupNavigation\(\{\s+isManager: IS_MANAGER/);
   assert.match(popup, /!IS_MANAGER && <AppSegmentedControl/);
   assert.match(popup, /if \(autofill && !IS_MANAGER\)/);
   assert.match(popup, /const fillAddress = async \(\) => \{\s+if \(IS_MANAGER\) return/);

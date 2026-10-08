@@ -37,6 +37,26 @@
     iCloudHmeOptions: { autofill: { button: true, contextMenu: true } },
     autoHmeReconnect: true,
   };
+  // Opt-in persistence is confined to non-secret navigation/presentation data.
+  // Normal previews remain isolated and deterministic on every reload.
+  const persistNavigation = params.get('navigation') === '1';
+  const previewStorageKey = 'apple-all-in-one:synthetic-navigation:v1';
+  const isNavigationKey = (key) => key === 'popupNavigation:toolbar:v1'
+    || key === 'popupNavigation:manager:v1' || key.startsWith('hme-manager-view:');
+  if (persistNavigation) {
+    try {
+      const saved = JSON.parse(localStorage.getItem(previewStorageKey) || '{}');
+      for (const [key, value] of Object.entries(saved)) if (isNavigationKey(key)) local[key] = value;
+    } catch { /* A broken preview cache must not prevent loading the fixture. */ }
+  }
+  const persistPreviewNavigation = () => {
+    if (!persistNavigation) return;
+    try {
+      localStorage.setItem(previewStorageKey, JSON.stringify(
+        Object.fromEntries(Object.entries(local).filter(([key]) => isNavigationKey(key)))
+      ));
+    } catch { /* Storage-disabled previews still work for the current page. */ }
+  };
   const session = {};
   const respond = (value, cb) => {
     if (cb) queueMicrotask(() => cb(value));
@@ -59,6 +79,7 @@
         changes[key] = { oldValue: record[key], newValue: values[key] };
         record[key] = values[key];
       }
+      if (area === 'local') persistPreviewNavigation();
       queueMicrotask(() => storageChanges.emit(changes, area));
       return respond(undefined, cb);
     },
@@ -68,6 +89,7 @@
         changes[key] = { oldValue: record[key] };
         delete record[key];
       }
+      if (area === 'local') persistPreviewNavigation();
       queueMicrotask(() => storageChanges.emit(changes, area));
       return respond(undefined, cb);
     },
@@ -94,6 +116,7 @@
   let sitePreferences = { suggestions: 'automatic', privateSignup: true, allowHttp: true };
   let fills = 0,
     reads = 0;
+  let passwordQueryReads = 0, secretReads = 0;
   let hmeFills = 0, hmeReservations = 0, hmeCandidates = 0;
   if (params.has('clipboard')) {
     let attempts = 0;
@@ -156,11 +179,13 @@
       id: 'qa-extension',
       lastError: undefined,
       onMessage: runtimeMessages,
-      getManifest: () => ({ version: '1.3.9' }),
+      getManifest: () => ({ version: '1.3.10' }),
       getURL: (value) => new URL(value, location.origin).href,
       openOptionsPage: (cb) => respond(undefined, cb),
       sendMessage(message, cb) {
         let result = { ok: true };
+        if (message.type === 'getLogins' || message.type === 'getOtpItems') passwordQueryReads++;
+        if (['fillOnPage', 'fillOtpOnPage', 'getOtpForLoginDetails'].includes(message.type)) secretReads++;
         if (message.type === 'getState')
           result = { ok: true, state: nativeState, hasChallenge: hasNativeChallenge };
         if (message.type === 'connect') {
@@ -283,6 +308,8 @@
         }
         document.documentElement.dataset.fillReads = String(fills);
         document.documentElement.dataset.listReads = String(reads);
+        document.documentElement.dataset.passwordQueryReads = String(passwordQueryReads);
+        document.documentElement.dataset.secretReads = String(secretReads);
         return respond(result, cb);
       },
     },

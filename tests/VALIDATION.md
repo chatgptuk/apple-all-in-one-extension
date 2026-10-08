@@ -22,6 +22,7 @@ For visual QA, run `node tests/preview-server.mjs`, then open these URLs in the 
 
 - `http://127.0.0.1:4179/popup.html`: real production popup, synthetic accounts and addresses. Check expansion/collapse, metadata saving and the updated list.
 - Add `?many=1` (or `?manager=1&many=1` for the separate manager) to verify all 660 synthetic addresses render at once, without “Show More”. Check the last row, search/clear, filters and bulk selection; website icons must remain lazy-loaded.
+- Add `?navigation=1&many=1` to the popup preview to persist only synthetic navigation/list presentation across reloads. Open an address, reload, and verify the same detail returns without password reads or candidate creation; toolbar and `?manager=1` destinations are separate. Clear the `apple-all-in-one:synthetic-navigation:v1` localStorage key to reset this opt-in preview state.
 - `http://127.0.0.1:4179/inline-preview.html`: real inline chooser. Simulates failed signup requests and permits testing length/symbol controls and retries.
 - `http://127.0.0.1:4179/form-preview.html`: real production content script on a change-password form, with current/new/confirmation/unrelated fields and browser-native HTML pattern validation.
 - Add `?httpCrypto=1` to the form preview to remove `randomUUID` and reproduce a non-secure page's Crypto API surface (loopback itself is considered trustworthy by browsers).

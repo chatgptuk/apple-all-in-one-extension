@@ -40,6 +40,8 @@ import { useHmeList } from '../../useHmeList';
 import { matchHmeAliases, normalizeHmeHost } from '../../hme-site-matching';
 import { DEFAULT_MANAGER_VIEW, sanitizeManagerView, selectManagedAddresses, addressDetailNavigation, type AddressFilter, type AddressSort, type ManagerViewState } from './management-model';
 import { canRetryPasswordRequest } from './password-requests';
+import { usePopupNavigation } from './usePopupNavigation';
+import { restoreHmeDetail } from './restore-hme-detail';
 
 const IS_MANAGER = new URLSearchParams(window.location.search).get('manager') === '1';
 // Keep an in-progress query while opening details, but never persist it to disk.
@@ -2349,7 +2351,9 @@ const DetailsView = ({
               ? tr('Checking recent mail…', '正在检查近期邮件…')
               : item.activityStatus === 'error'
                 ? tr('Could not refresh', '无法刷新')
-                : tr('Not found in recent scan', '近期扫描中未找到')}</span></DetailRow>
+                : item.activityStatus === 'idle'
+                  ? tr('Not checked yet', '尚未检查')
+                  : tr('Not found in recent scan', '近期扫描中未找到')}</span></DetailRow>
         <DetailRow label={tr('Status', '状态')}><span className={cx('hme-status-text', item.isActive && 'is-active')}><i />{item.isActive ? tr('Active', '已启用') : tr('Inactive', '已停用')}</span></DetailRow>
         <DetailRow label={tr('Note', '备注')}>
           {editingMetadata ? (
@@ -2487,7 +2491,6 @@ const performDeauthSideEffects = async () => {
 };
 
 const Popup = () => {
-  const [appSection, setAppSection] = useState<AppSection>(IS_MANAGER ? 'hide-email' : 'passwords');
   const [storedPopupState, setStoredPopupState, isPopupStateLoading] = useBrowserStorageState(
     'popupState',
     PopupState.SignedOut
@@ -2496,18 +2499,28 @@ const Popup = () => {
     'clientState',
     undefined
   );
-  const [view, setView] = useState<View>(
-    IS_MANAGER || storedPopupState === PopupState.AuthenticatedAndManaging ? 'manage' : 'generate'
-  );
   const [selected, setSelected] = useState<HmeWithActivity>();
   const [detailAddresses, setDetailAddresses] = useState<HmeWithActivity[]>([]);
   const [detailNavigationFocus, setDetailNavigationFocus] = useState<'previous' | 'next'>();
   const detailNavigation = addressDetailNavigation(detailAddresses, selected?.anonymousId);
   const [selectedAccountKey, setSelectedAccountKey] = useState('');
   const activeAccountKey = clientState ? hmeListCacheKey(clientState) : '';
+  const { ready: navigationReady, navigation, navigate } = usePopupNavigation({
+    isManager: IS_MANAGER,
+    accountKey: activeAccountKey,
+    accountLoading: isClientStateLoading,
+    legacyManaging: storedPopupState === PopupState.AuthenticatedAndManaging,
+    legacyLoading: isPopupStateLoading,
+  });
+  const { appSection, hmeView: view } = navigation;
+  const setAppSection = useCallback((next: AppSection) => navigate({ appSection: next }), [navigate]);
+  const setView = useCallback((next: Exclude<View, 'details'>) => navigate({
+    hmeView: next, accountKey: undefined, anonymousId: undefined,
+  }), [navigate]);
   const previousAccountKey = useRef(activeAccountKey);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [viewInitialized, setViewInitialized] = useState(false);
+  const [detailRestoreError, setDetailRestoreError] = useState<string>();
+  const [detailRestoreRetry, setDetailRestoreRetry] = useState(0);
   const [isHmeDiscovering, setIsHmeDiscovering] = useState(false);
   const [hmeDiscoveryDone, setHmeDiscoveryDone] = useState(false);
   const [hmeDiscoveryError, setHmeDiscoveryError] = useState<string>();
@@ -2520,13 +2533,11 @@ const Popup = () => {
 
   useEffect(() => {
     if (previousAccountKey.current === activeAccountKey) return;
-    const wasConnected = !!previousAccountKey.current;
     previousAccountKey.current = activeAccountKey;
     setSelected(undefined);
     setSelectedAccountKey('');
     setDetailAddresses([]);
     setDetailNavigationFocus(undefined);
-    if (wasConnected) setView('manage');
   }, [activeAccountKey]);
 
   useEffect(() => {
@@ -2534,21 +2545,13 @@ const Popup = () => {
     if (IS_MANAGER) document.title = tr('Hide My Email — Address Manager', '隐藏邮件地址 — 地址管理');
   }, []);
 
-  useEffect(() => {
-    if (!isPopupStateLoading && !viewInitialized) {
-      setView(
-        IS_MANAGER || storedPopupState === PopupState.AuthenticatedAndManaging ? 'manage' : 'generate'
-      );
-      setViewInitialized(true);
-    }
-  }, [isPopupStateLoading, storedPopupState, viewInitialized]);
-
   // On a fresh install, the user may already be signed in to iCloud.com. Discover that
   // session only when Hide My Email is explicitly opened; never during install/startup.
   // Do not depend on isHmeDiscovering here: setting that flag from inside this effect would
   // immediately run the cleanup and cancel our own request (the v1.2.1 infinite-check bug).
   useEffect(() => {
     if (
+      !navigationReady ||
       appSection !== 'hide-email' ||
       isClientStateLoading ||
       clientState ||
@@ -2639,6 +2642,7 @@ const Popup = () => {
       cancelled = true;
     };
   }, [
+    navigationReady,
     appSection,
     autoHmeReconnect,
     clientState,
@@ -2652,7 +2656,7 @@ const Popup = () => {
   // Hide My Email session validation is deliberately soft. Passwords remains usable even
   // when iCloud.com is signed out or temporarily unreachable.
   useEffect(() => {
-    if (appSection !== 'hide-email' || isClientStateLoading || !clientState?.setupUrl) return;
+    if (!navigationReady || appSection !== 'hide-email' || isClientStateLoading || !clientState?.setupUrl) return;
 
     let cancelled = false;
     const validateCachedSession = async () => {
@@ -2710,6 +2714,7 @@ const Popup = () => {
       cancelled = true;
     };
   }, [
+    navigationReady,
     appSection,
     clientState?.setupUrl,
     isClientStateLoading,
@@ -2753,7 +2758,7 @@ const Popup = () => {
       setClientState(undefined);
       await performDeauthSideEffects();
     },
-    [clientState, setClientState, setStoredPopupState]
+    [clientState, setClientState, setStoredPopupState, setView]
   );
 
   useEffect(() => {
@@ -2781,12 +2786,51 @@ const Popup = () => {
       : undefined,
     [clientState, handleHmeAuthenticationFailure]
   );
+  const detailReady = !!selected && selected.anonymousId === navigation.anonymousId && selectedAccountKey === activeAccountKey;
+
+  useEffect(() => {
+    if (!navigationReady || appSection !== 'hide-email' || view !== 'details' ||
+      !hmeClient || hmeLoading || !navigation.anonymousId || detailReady) return;
+    let cancelled = false;
+    setDetailRestoreError(undefined);
+    restoreHmeDetail(hmeClient, navigation.anonymousId, {
+      isManager: IS_MANAGER,
+      search: managerQueries.get(`hme-manager-view:${activeAccountKey}`) || '',
+      getCurrentHost: async () => normalizeHmeHost((await getActiveTabForPopup())?.url || '') || '',
+    }).then(({ selected: restored, addresses }) => {
+      if (cancelled) return;
+      if (!restored) { setView('manage'); return; }
+      setSelected(restored);
+      setSelectedAccountKey(activeAccountKey);
+      setDetailAddresses(addresses);
+      setDetailNavigationFocus(undefined);
+    }).catch(() => {
+      if (!cancelled) setDetailRestoreError(tr(
+        'Could not restore this address. Retry or return to My Addresses.',
+        '暂时无法恢复这个地址，请重试或返回“我的地址”。'
+      ));
+    });
+    return () => { cancelled = true; };
+  }, [navigationReady, appSection, view, hmeClient, hmeLoading, navigation.anonymousId,
+    detailReady, activeAccountKey, detailRestoreRetry, setView]);
+
   const headerSubtitle =
     appSection === 'passwords'
       ? tr('Apple Passwords, codes & passkeys', 'Apple 密码、验证码与通行密钥')
       : view === 'details'
         ? tr('Private address details', '隐藏地址详情')
         : tr('iCloud+ Hide My Email', 'iCloud+ 隐藏邮件地址');
+
+  // Do not briefly mount the default page: its effects can request native
+  // access or generate a candidate before the saved destination is known.
+  if (!navigationReady) return (
+    <div className={cx('hme-popup-shell unified-shell', IS_MANAGER && 'hme-manager-shell')}>
+      <Header />
+      <main className="hme-content unified-content" aria-busy="true">
+        <div className="hme-view-body unified-center compact-state"><Spinner /></div>
+      </main>
+    </div>
+  );
 
   return (
     <div className={cx('hme-popup-shell unified-shell', IS_MANAGER && 'hme-manager-shell')}>
@@ -2845,12 +2889,26 @@ const Popup = () => {
               setDetailAddresses(visible);
               setDetailNavigationFocus(undefined);
               setSelectedAccountKey(activeAccountKey);
-              setView('details');
+              navigate({ hmeView: 'details', accountKey: activeAccountKey, anonymousId: hme.anonymousId });
             }}
           />
         )}
 
-        {appSection === 'hide-email' && !hmeLoading && hmeClient && view === 'details' && selected && selectedAccountKey === activeAccountKey && (
+        {appSection === 'hide-email' && !hmeLoading && hmeClient && view === 'details' && !detailReady && (
+          <div className="hme-view-body unified-center compact-state">
+            {detailRestoreError ? <>
+              <ErrorBanner>{detailRestoreError}</ErrorBanner>
+              <button className="hme-primary-button" onClick={() => setDetailRestoreRetry((value) => value + 1)}>{tr('Retry', '重试')}</button>
+              <button className="hme-secondary-action" onClick={() => navigateHme('manage')}>{tr('My Addresses', '我的地址')}</button>
+            </> : <>
+              <Spinner />
+              <h2>{tr('Restoring address…', '正在恢复地址…')}</h2>
+              <button className="hme-secondary-action" onClick={() => navigateHme('manage')}>{tr('My Addresses', '我的地址')}</button>
+            </>}
+          </div>
+        )}
+
+        {appSection === 'hide-email' && !hmeLoading && hmeClient && view === 'details' && detailReady && selected && selectedAccountKey === activeAccountKey && (
           <DetailsView
             key={`${activeAccountKey}:${selected.anonymousId}`}
             client={hmeClient}
@@ -2862,8 +2920,9 @@ const Popup = () => {
               if (!next) return;
               setDetailNavigationFocus(direction);
               setSelected(next);
+              navigate({ hmeView: 'details', accountKey: activeAccountKey, anonymousId: next.anonymousId });
             }}
-            onBack={() => { setView('manage'); setDetailAddresses([]); }}
+            onBack={() => navigateHme('manage')}
             onChanged={(deleted, next) => {
               setRefreshKey((key) => key + 1);
               if (deleted) {

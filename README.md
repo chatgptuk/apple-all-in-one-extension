@@ -11,7 +11,7 @@ An independent, open-source Chromium extension that brings Apple Passwords, pass
 
 This project is not endorsed by, sponsored by, authorized by, or affiliated with Apple Inc. Apple, iCloud, iCloud+, Apple Passwords, and related names are Apple trademarks used here only to describe compatibility and the services being accessed.
 
-**Current version:** 1.3.9<br>
+**Current version:** 1.3.10<br>
 **Repository:** https://github.com/chatgptuk/apple-all-in-one-extension
 
 ## Who this project is for
@@ -121,6 +121,7 @@ npm run watch
 
 - Browser startup does not validate iCloud or start the Apple Passwords connection.
 - Each subsystem initializes only when the corresponding feature is opened or used.
+- Reopening the popup restores the last feature tab and Hide My Email page, including an address's details. The standalone address manager remembers its page separately. Deleted addresses or account changes return to the list. Only navigation metadata is saved—not password details, codes, searches, or unsaved edits—and the password list still follows the current website.
 - The popup briefly retries background messages while Chromium wakes its Manifest V3 service worker.
 - The Apple Passwords six-digit pairing code belongs to the current native session. Its connected native-messaging port keeps the worker active; there is no perpetual polling alarm. This cannot guarantee that a real browser/native-session restart will remain unlocked.
 - Hide My Email can automatically re-check the existing trusted iCloud browser session. If Apple requires authentication or 2FA, the extension stops and sends the user to iCloud.com; it does not attempt to bypass that requirement.
