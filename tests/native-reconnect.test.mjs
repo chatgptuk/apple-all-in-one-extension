@@ -210,6 +210,27 @@ test('the actual diagnostic response includes sanitized native lifecycle events'
   assert.equal(result.ok, true);
   assert.equal(result.report.passwordState, State.Disconnected);
   assert.equal(result.report.nativeConnection.events.at(-1).reason, 'helper_exited');
+  // Nothing was in flight, but the exit still names the last command sent on that port.
+  assert.equal(result.report.nativeConnection.events.at(-1).command, undefined);
+  assert.equal(result.report.nativeConnection.events.at(-1).lastCommand, Command.GET_CAPABILITIES);
   assert.equal(typeof result.report.nativeConnection.startedAt, 'number');
   assert.doesNotMatch(JSON.stringify(result.report), /private diagnostic|native-reconnect-test/);
+});
+
+test('a native host exit retains the pending command and reports helper failure, not an ordinary lock', async (t) => {
+  const h = nativeHarness(t);
+  await h.request('connect');
+  const changes = [];
+  h.client.onStateChange((state, reason) => changes.push([state, reason]));
+  const journaled = h.client.getDiagnostics().events.length;
+  const pending = assert.rejects(h.client._send(Command.GET_LOGIN_NAMES_FOR_URL), /Native host has exited/);
+  // Per-request events would evict the unlock/exit history from the bounded journal.
+  assert.equal(h.client.getDiagnostics().events.length, journaled);
+  h.client.port.drop('Native host has exited.');
+  await pending;
+  const event = h.client.getDiagnostics().events.at(-1);
+  assert.equal(event.reason, 'helper_exited');
+  assert.equal(event.command, Command.GET_LOGIN_NAMES_FOR_URL);
+  assert.equal(event.lastCommand, Command.GET_LOGIN_NAMES_FOR_URL);
+  assert.deepEqual(changes, [[State.Disconnected, 'helper_exited']]);
 });

@@ -11,7 +11,7 @@ An independent, open-source Chromium extension that brings Apple Passwords, pass
 
 This project is not endorsed by, sponsored by, authorized by, or affiliated with Apple Inc. Apple, iCloud, iCloud+, Apple Passwords, and related names are Apple trademarks used here only to describe compatibility and the services being accessed.
 
-**Current version:** 1.3.8<br>
+**Current version:** 1.3.9<br>
 **Repository:** https://github.com/chatgptuk/apple-all-in-one-extension
 
 ## Who this project is for
@@ -35,6 +35,7 @@ If the native helper disconnects temporarily, reopen the popup to reconnect. The
 A slow account/code-list query no longer immediately discards the unlocked session: after the 5-second UI timeout, the connection allows up to 25 more seconds to discard its late reply before accepting new requests. A missing reply beyond that limit, or an explicit Apple session reset, still requires reconnecting. Stale unlock controls and duplicate code submissions cannot reset an already unlocked session. **Website Settings & Status → Copy Safe Diagnostic Report** includes bounded connection events and worker-start markers retained in browser session memory across background-worker restarts, without accounts, passwords, codes, URLs or raw native messages. It does not retain or restore authentication keys.
 
 - Connects to the macOS `com.apple.passwordmanager` native helper.
+- Validates website targets before native queries: HTTP and HTTPS remain supported, while internal pages, local files and empty domains never reach the helper. Unexpected helper exits are reported separately from an ordinary locked session.
 - Uses the Open Passwords SRP/AES-GCM protocol for encrypted credential queries.
 - Finds, fills, saves, and updates passwords.
 - Generates passwords for supported page length, pattern, character-class, and symbol rules, then validates them before filling. Optional length/symbol controls stay within the site's constraints. Generated passwords never use `-` or overwrite current-password fields.

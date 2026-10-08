@@ -529,6 +529,8 @@ const fillFailureGuidance = (reason?: string) => {
     case 'no_otp_field': return tr('No verification-code field is visible. Select that field, or copy the code here.', '当前未找到验证码框。请先点击验证码输入框，也可以在这里复制验证码。');
     case 'insecure_page': return tr('HTTP filling is disabled for this website. Enable it in Website Settings & Status, or use HTTPS.', '已按此网站的设置阻止 HTTP 填充。可在“网站设置与状态”中开启，或使用 HTTPS。');
     case 'locked': return tr('Apple Passwords is locked. Unlock the password session and retry.', 'Apple 密码尚未解锁。请解锁密码会话后重试。');
+    case 'unsupported_page': return tr('Open an HTTP or HTTPS website to query Apple Passwords. Your session has not been reset.', '请打开 HTTP 或 HTTPS 网站后查询 Apple 密码，现有会话不会被重置。');
+    case 'native_disconnected': return tr('The Apple Passwords helper exited unexpectedly and its session was lost. Reconnect and unlock again; copy diagnostics if this recurs.', 'Apple 密码辅助程序意外退出，原会话已丢失。请重新连接并解锁；如反复出现，请复制诊断报告。');
     case 'native_timeout': return tr('Apple is taking longer to respond. Check the system prompt and retry shortly; a slow list query does not immediately end your session.', 'Apple 响应较慢，请检查系统提示并稍后重试；列表查询暂时超时不会立即结束已解锁会话。');
     case 'native_busy': return tr('Another Apple authorization is in progress. Finish it before retrying.', '另一项 Apple 授权正在进行，请处理完成后重试。');
     case 'authorization_cancelled': return tr('System authorization was not completed. You can retry when ready.', '系统授权未完成。准备好后可以重新尝试。');
@@ -675,7 +677,7 @@ const PasswordsView = () => {
 
     let loginSucceeded = false;
     try {
-      const loginResult = await sendPasswordMessage<{ ok?: boolean; logins?: PasswordLogin[]; error?: string }>(
+      const loginResult = await sendPasswordMessage<{ ok?: boolean; logins?: PasswordLogin[]; error?: string; reason?: string }>(
         { type: 'getLogins' },
         10_000,
       );
@@ -689,7 +691,7 @@ const PasswordsView = () => {
         loginSucceeded = true;
         setLogins(loginResult.logins || []);
       } else {
-        setError(loginResult?.error || tr(
+        setError(loginResult?.reason ? fillFailureGuidance(loginResult.reason) : loginResult?.error || tr(
           'Could not query Apple Passwords. Your saved items were not reported as empty.',
           '无法查询 Apple 密码；扩展不会再把查询失败显示成“没有已保存项目”。'
         ));
@@ -836,9 +838,10 @@ const PasswordsView = () => {
       }
     })();
     const listener = (message: unknown) => {
-      const msg = message as { type?: string; state?: PasswordState };
+      const msg = message as { type?: string; state?: PasswordState; reason?: string };
       if (msg?.type === 'state' && msg.state) {
         setState(msg.state);
+        if (msg.reason === 'native_disconnected') setError(fillFailureGuidance(msg.reason));
         if (msg.state !== 'needs_pin') setHasChallenge(false);
         if (msg.state === 'unlocked') loadSiteItems().catch(console.debug);
         else {

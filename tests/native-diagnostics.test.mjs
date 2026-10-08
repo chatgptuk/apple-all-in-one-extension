@@ -24,17 +24,20 @@ test('journal sanitizes both stored and incoming events and bounds its detached 
   const journal = createNativeDiagnosticJournal({
     get: async () => ({ passwordNativeDiagnosticHistory: [
       { reason: 'helper_exited', at: 100, password: 'private-secret', url: 'https://example.test' },
+      // Retired per-request reason from an earlier build is dropped on load.
+      { reason: 'request_sent', at: 100, command: Command.GET_LOGIN_NAMES_FOR_URL },
       { reason: 'private error message', at: 101 },
       { reason: 'worker_started', at: 'private string' },
     ] }),
     set: async (value) => writes.push(structuredClone(value)),
   });
-  journal.record({ reason: 'verification_failed', at: 102, command: Command.HANDSHAKE, pin: '123456' });
+  journal.record({ reason: 'verification_failed', at: 102, command: Command.HANDSHAKE, lastCommand: 'private-command', pin: '123456' });
   journal.record({ reason: 'connected', at: NaN });
   journal.record({ reason: 'private-secret', at: 103 });
   const clean = await journal.read();
   assert.equal(clean.length, 3);
   assert.equal(clean.at(-1).command, Command.HANDSHAKE);
+  assert.equal('lastCommand' in clean.at(-1), false);
   assert.doesNotMatch(JSON.stringify(writes), /private|example|123456|password"|url"/);
   for (let i = 0; i < 60; i++) journal.record({ reason: 'metadata_slow', at: i, command: 'private-command' });
   const bounded = await journal.read();

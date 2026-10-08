@@ -28,6 +28,10 @@ test('diagnostic errors have stable reasons and never echo native secrets or URL
   diagnostics.recordDiagnostic('fill https://private.example?secret=SensitivePassword', 'unavailable');
   assert.equal(history[0].operation, 'unknown');
   assert.doesNotMatch(JSON.stringify(history), /private|SensitivePassword/);
+  assert.equal(failureReason(new Error('Native host has exited.')), 'native_disconnected');
+  assert.match(failureMessage('native_disconnected', true), /意外退出/);
+  assert.equal(failureReason({ code: 'unsupported_page' }), 'unsupported_page');
+  assert.match(failureMessage('unsupported_page', true), /HTTP/);
 });
 
 test('site preferences use exact hostname and safe defaults', () => {

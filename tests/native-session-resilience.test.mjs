@@ -136,7 +136,7 @@ test('an authenticated invalid-session response is not treated as an empty vault
     decrypt: async () => new TextEncoder().encode(JSON.stringify({ STATUS: 9 })),
   };
   client._send = async () => ({ payload: { SMSG: { TID: 'synthetic-session', SDATA: 'synthetic-data' } } });
-  await assert.rejects(client._encryptedQuery(Command.GET_LOGIN_NAMES_FOR_URL, 1, 'example.test', {}), /session expired/);
+  await assert.rejects(client._encryptedQuery(Command.GET_LOGIN_NAMES_FOR_URL, 1, 'example.test', { ACT: 5, URL: 'example.test' }), /session expired/);
   assert.equal(client.state, State.Disconnected);
   assert.equal(client.session, undefined);
   assert.equal(client.getDiagnostics().events.at(-1).reason, 'session_expired');

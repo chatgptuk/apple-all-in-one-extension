@@ -1,13 +1,13 @@
 /**
  * Shared, runtime-checked boundaries for password messages. These types describe
  * metadata and delivery intent, never authorize a caller or a destination.
- * @typedef {'target_changed'|'no_login_field'|'no_otp_field'|'insecure_page'|'insecure_save'|'locked'|'native_timeout'|'native_busy'|'authorization_cancelled'|'ambiguous_account'|'unavailable'|'invalid_request'} FailureReason
+ * @typedef {'target_changed'|'no_login_field'|'no_otp_field'|'insecure_page'|'insecure_save'|'unsupported_page'|'locked'|'native_disconnected'|'native_timeout'|'native_busy'|'authorization_cancelled'|'ambiguous_account'|'unavailable'|'invalid_request'} FailureReason
  * @typedef {{suggestions:'automatic'|'manual', privateSignup:boolean, allowHttp:boolean}} SitePreferences
  * @typedef {{type:'fillOnPage',loginName:{username:string},mode?:'fill'|'details'} | {type:'fillOtpOnPage',username:string,mode?:'fill'|'details'}} DetailRequest
  * @typedef {{expectedOrigin:string,expectedHref:string,expectedDocumentToken:string,targetToken:string,documentId?:string}} FillBinding
  * @typedef {{ok:boolean,filled?:boolean,reason?:FailureReason,error?:string}} FillResult
  */
-const reasons = new Set(['target_changed', 'no_login_field', 'no_otp_field', 'insecure_page', 'insecure_save', 'locked', 'native_timeout', 'native_busy', 'authorization_cancelled', 'ambiguous_account', 'unavailable', 'invalid_request']);
+const reasons = new Set(['target_changed', 'no_login_field', 'no_otp_field', 'insecure_page', 'insecure_save', 'unsupported_page', 'locked', 'native_disconnected', 'native_timeout', 'native_busy', 'authorization_cancelled', 'ambiguous_account', 'unavailable', 'invalid_request']);
 /** @param {unknown} value @returns {Record<string, unknown>} */
 function record(value) { return value && typeof value === 'object' && !Array.isArray(value) ? /** @type {Record<string, unknown>} */ (value) : {}; }
 /** @param {unknown} value @param {number} [max] */
@@ -63,8 +63,9 @@ export function failureReason(error) {
   const message = String(e.message || e.error || error || '');
   if (/ambiguous/i.test(message)) return 'ambiguous_account';
   if (/non-HTTPS|insecure/i.test(message)) return 'insecure_page';
+  if (/native host has exited/i.test(message)) return 'native_disconnected';
   if (/not unlocked|is locked|needs_pin/i.test(message)) return 'locked';
-  if (/session expired|invalid session|session changed|not connected|connection closed|native host has exited/i.test(message)) return 'locked';
+  if (/session expired|invalid session|session changed|not connected|connection closed/i.test(message)) return 'locked';
   if (/busy|queue/i.test(message)) return 'native_busy';
   if (/timed? ?out|timeout/i.test(message)) return 'native_timeout';
   if (/cancelled|canceled|denied by user/i.test(message)) return 'authorization_cancelled';
@@ -80,6 +81,8 @@ export function failureMessage(reason, chinese = false) {
     insecure_page: ['HTTP filling is disabled for this website. Enable it in Website Settings & Status, or use HTTPS.', '已按此网站的设置阻止 HTTP 填充。可在扩展“网站设置与状态”中开启，或使用 HTTPS。'],
     insecure_save: ['Saving passwords from this HTTP page is not supported. Use HTTPS or save in Apple Passwords; the HTTP filling setting is separate.', '此 HTTP 页面不支持保存密码。请使用 HTTPS 页面或在 Apple 密码中保存；这与 HTTP 填充开关无关。'],
     locked: ['Unlock Apple Passwords from the extension toolbar, then retry.', '请从扩展工具栏解锁 Apple 密码后重试。'],
+    unsupported_page: ['Apple Passwords cannot query this page. Open an HTTP or HTTPS website and retry; the existing session is unchanged.', '此页面不支持查询 Apple 密码。请打开 HTTP 或 HTTPS 网站后重试；现有会话不会被重置。'],
+    native_disconnected: ['The Apple Passwords helper exited unexpectedly and its session was lost. Reconnect and unlock again; copy diagnostics if this recurs.', 'Apple 密码辅助程序意外退出，原会话已丢失。请重新连接并解锁；如反复出现，请复制诊断报告。'],
     native_timeout: ['Apple Passwords did not respond in time. Check the system authorization prompt, then retry.', 'Apple 密码响应超时，请检查系统授权窗口后重试。'],
     native_busy: ['Apple Passwords is handling another request. Finish it, then retry.', 'Apple 密码正在处理另一项请求，请先完成该操作再重试。'],
     authorization_cancelled: ['System authorization was not completed. Retry when you are ready.', '系统授权未完成，准备好后可以重试。'],

@@ -3,6 +3,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { webcrypto } from 'node:crypto';
 import { randomToken } from '../src/passwords/random-token.js';
+import { normalizeNativeTarget } from '../src/passwords/core/native-target.js';
 import * as contracts from '../src/passwords/message-contracts.js';
 
 export const read = (path) =>
@@ -104,6 +105,7 @@ export function runtimeMessageHandler(path, globals) {
     crypto: webcrypto,
     randomToken,
     ...contracts,
+    normalizeNativeTarget,
     recordDiagnostic: () => {},
     Date,
     scheduleSecretCleanup: () => {},

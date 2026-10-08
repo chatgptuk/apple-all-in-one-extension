@@ -6,6 +6,7 @@ import { createPasswordCache } from "./password-cache.js";
 import { accountKey, selectAccountCode } from './account-identity.js';
 import { createPendingSaveQueue } from './pending-saves.js';
 import { createNativeDiagnosticJournal } from './native-diagnostics.js';
+import { normalizeNativeTarget } from './native-target.js';
 import { validPasswordRequest, failureReason, failureMessage, failureResult, normalizeSitePreferences } from '../message-contracts.js';
 import { SITE_PREFERENCES_KEY, sitePreferencesFor, validSiteHost } from '../site-preferences.js';
 
@@ -25,10 +26,11 @@ function setSaveStatus(tabId, status) {
   broadcast({ type: 'password-save-status', status });
 }
 
-client.onStateChange((s) => {
+client.onStateChange((s, nativeReason) => {
   // any state other than unlocked means the session/keys are gone - drop the plaintext cache
   if (s !== State.Unlocked) pwCacheClear();
-  broadcast({ type: "state", state: s });
+  const reason = s === State.Disconnected && nativeReason === 'helper_exited' ? 'native_disconnected' : undefined;
+  broadcast({ type: "state", state: s, ...(reason ? { reason } : {}) });
 });
 
 function broadcast(msg) {
@@ -418,6 +420,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // login names only (no passwords) for the exact frame that asked, keyed to sender.url not the top tab
           const frameUrl = sender.url;
           if (!frameUrl) return sendResponse({ ok: false, error: "no frame" });
+          normalizeNativeTarget(sender.tab?.id, frameUrl);
           await ensureConnected();
           if (!client.ready) return sendResponse({ ok: true, locked: true, logins: [] });
           try {
@@ -444,6 +447,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!frameUrl || sender.tab?.id == null) {
             return sendResponse({ ok: false, error: "no frame" });
           }
+          normalizeNativeTarget(sender.tab.id, frameUrl);
           await ensureConnected();
           if (!client.ready) return sendResponse({ ok: true, locked: true, items: [] });
           try {
@@ -611,6 +615,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "getOtpItems": {
           const tab = await activeTab();
           if (!tab?.url || tab.id == null) return sendResponse({ ok: false, error: "no active tab" });
+          normalizeNativeTarget(tab.id, tab.url);
           await ensureConnected();
           if (!client.ready) return sendResponse({ ok: true, locked: true, items: [] });
           try {
@@ -745,6 +750,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // real active tab's URL, never caller-supplied
           const tab = await activeTab();
           if (!tab?.url) return sendResponse({ ok: false, error: "no active tab" });
+          normalizeNativeTarget(tab.id, tab.url);
           await ensureConnected();
           if (!client.ready) return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
           try {

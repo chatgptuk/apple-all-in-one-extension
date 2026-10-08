@@ -86,7 +86,7 @@ function chooserContext({ privateSignup = true, suggestions = 'automatic', ready
   class Input {}
   const field = new Input();
   const messages = [], states = [];
-  const context = functionsFrom(source, ['openForField', 'loginMetadata'], {
+  const context = functionsFrom(source, ['openForField', 'loginMetadata', 'inlineLookupError'], {
     sitePreferences: { suggestions, privateSignup }, sitePreferencesReady: ready,
     extensionContextInvalidated: false, pageInactive: false, HTMLInputElement: Input, offerSeq: 0, aliasLookupSeq: 0,
     location: { hostname: 'signin.example.test' }, window: { top: {} },
@@ -153,6 +153,15 @@ test('inline failure copy is localized and never echoes native secret/error payl
   assert.match(context.safeFailureMessage({ reason: 'target_changed' }), /输入框/);
   const copy = context.safeFailureMessage({ error: 'Native secret=ci-secret https://private.invalid/account' });
   assert.doesNotMatch(copy, /ci-secret|private\.invalid/);
+});
+
+test('an unsupported frame explains the limit instead of asking for a retry that cannot work', () => {
+  const context = functionsFrom(source, ['safeFailureMessage', 'inlineLookupError'], { failureReason, failureMessage, appResolvedLanguage: () => 'en' });
+  assert.match(context.inlineLookupError({ ok: false, reason: 'unsupported_page' }, 'retry'), /HTTP or HTTPS/);
+  assert.equal(context.inlineLookupError({ ok: false, reason: 'native_timeout' }, 'retry'), 'retry');
+  assert.equal(context.inlineLookupError(null, 'retry'), 'retry');
+  assert.equal(context.inlineLookupError({ ok: true, locked: true }, 'retry'), '');
+  assert.equal(context.inlineLookupError({ ok: true, logins: [] }, 'retry'), '');
 });
 
 for (const response of [{ ok: true, status: 'waiting_unlock' }, { ok: true, status: 'submitted' }, { ok: false, status: 'failed' }, { ok: true, status: 'failed' }, { ok: true, status: 'expired' }]) {

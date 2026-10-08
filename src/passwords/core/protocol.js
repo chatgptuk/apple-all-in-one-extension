@@ -7,6 +7,7 @@
 import { SRPSession, SecretSessionVersion, MSGType } from "./srp.js";
 import { accountKey } from './account-identity.js';
 import { selectUniqueSecretForHost } from './login-order.js';
+import { normalizeNativeTarget } from './native-target.js';
 import {
   bytesToBase64,
   base64ToBytes,
@@ -27,7 +28,7 @@ const INTERACTIVE_SECRET_TIMEOUT_MS = 60_000;
 // Metadata can be slow after wake or while Apple's UI is busy. Stop the caller's
 // spinner after 5s, but allow 25s to drain that exact reply before ending SRP.
 const METADATA_DRAIN_MS = 25_000;
-const NATIVE_EVENT_REASONS = new Set(['connected', 'unlocked', 'challenge_requested', 'verification_failed', 'metadata_slow', 'metadata_drained', 'response_timeout', 'helper_exited', 'host_unavailable', 'transport_error', 'connection_closed', 'passwords_disabled', 'relogin_required', 'session_expired', 'incompatible_helper']);
+const NATIVE_EVENT_REASONS = new Set(['connected', 'unlocked', 'invalid_target_blocked', 'challenge_requested', 'verification_failed', 'metadata_slow', 'metadata_drained', 'response_timeout', 'helper_exited', 'host_unavailable', 'transport_error', 'connection_closed', 'passwords_disabled', 'relogin_required', 'session_expired', 'incompatible_helper']);
 // how long we still trust a code the Mac put on screen. past this we re-prompt rather than
 // verify against a challenge the user has probably lost track of
 const CHALLENGE_TTL_MS = 3 * 60_000;
@@ -66,8 +67,10 @@ export const State = {
 
 export function safeNativeEvent(event) {
   if (!event || !NATIVE_EVENT_REASONS.has(event.reason) || !Number.isFinite(event.at) || event.at < 0) return undefined;
+  const commands = Object.values(Command);
   return { reason: event.reason, at: event.at,
-    ...(Object.values(Command).includes(event.command) ? { command: event.command } : {}) };
+    ...(commands.includes(event.command) ? { command: event.command } : {}),
+    ...(commands.includes(event.lastCommand) ? { lastCommand: event.lastCommand } : {}) };
 }
 
 function nativeConnectionFailureState(error) {
@@ -110,6 +113,7 @@ export class ApplePasswords {
     this._connecting = undefined;
     this._startedAt = Date.now();
     this._diagnosticEvents = [];
+    this._lastCommand = undefined; // last command sent on this port, reported only when it closes
     this._onDiagnosticEvent = onDiagnosticEvent;
     // native protocol echoes the same cmd on replies with no correlation id, so two
     // in-flight requests with the same cmd collide. serialize all exchanges here
@@ -148,9 +152,9 @@ export class ApplePasswords {
     this._onState = fn;
   }
 
-  _recordNativeEvent(reason, command) {
+  _recordNativeEvent(reason, command, lastCommand) {
     // Strict allowlists: never keep native messages, URLs, account names or data.
-    const event = safeNativeEvent({ reason, at: Date.now(), command });
+    const event = safeNativeEvent({ reason, at: Date.now(), command, lastCommand });
     if (!event) return;
     this._diagnosticEvents.push(event);
     if (this._diagnosticEvents.length > 20) this._diagnosticEvents.shift();
@@ -161,12 +165,12 @@ export class ApplePasswords {
     return { startedAt: this._startedAt, events: this._diagnosticEvents.map((event) => ({ ...event })) };
   }
 
-  _setState(s) {
+  _setState(s, reason) {
     if (this.state === s) return;
     this.state = s;
     if (s === State.Unlocked) this._recordNativeEvent('unlocked');
     try {
-      this._onState(s);
+      this._onState(s, reason);
     } catch (_) {}
   }
 
@@ -215,6 +219,8 @@ export class ApplePasswords {
             }, timeoutMs);
       this._waiters.set(cmd, entry);
       try {
+        // Not a journal event: one per request would evict the lifecycle history.
+        this._lastCommand = cmd;
         this.port.postMessage({ cmd, ...body });
       } catch (e) {
         this._retireConnection(e, State.Disconnected, 'transport_error', cmd);
@@ -231,7 +237,8 @@ export class ApplePasswords {
   }
 
   _retireConnection(error = new Error('connection closed'), state = State.Disconnected, reason = 'connection_closed', command) {
-    this._recordNativeEvent(reason, command);
+    this._recordNativeEvent(reason, command, this._lastCommand);
+    this._lastCommand = undefined;
     const port = this.port;
     this.port = undefined;
     this.session = undefined;
@@ -239,7 +246,7 @@ export class ApplePasswords {
     this._challengeAt = 0;
     this._challengeGen++;
     this._rejectWaiters(error);
-    this._setState(state);
+    this._setState(state, reason);
     try { port?.disconnect(); } catch (_) {}
   }
 
@@ -283,8 +290,9 @@ export class ApplePasswords {
         const err = chrome.runtime.lastError?.message;
         if (this.port !== port) return;
         const state = nativeConnectionFailureState(err);
+        const command = this._waiters.keys().next().value;
         this._retireConnection(new Error(err || 'connection closed'), state,
-          state === State.NoHelper ? 'host_unavailable' : /native host has exited/i.test(err || '') ? 'helper_exited' : 'transport_error');
+          state === State.NoHelper ? 'host_unavailable' : /native host has exited/i.test(err || '') ? 'helper_exited' : 'transport_error', command);
       });
 
       this._send(Command.GET_CAPABILITIES)
@@ -468,6 +476,14 @@ export class ApplePasswords {
   }
 
   async _encryptedQuery(cmd, tabId, wireUrl, payloadBody, timeoutMs, options = {}) {
+    // The macOS 27 helper aborts in stringByAppendingString: if a password
+    // query has an empty URL and no NURL. Validate before encryption, not after
+    // sending (a helper crash destroys every authenticated session on this port).
+    if ((cmd === Command.GET_LOGIN_NAMES_FOR_URL || cmd === Command.GET_PASSWORD_FOR_LOGIN_NAME) &&
+        (typeof payloadBody?.URL !== 'string' || !payloadBody.URL.trim() || payloadBody.URL !== wireUrl)) {
+      this._recordNativeEvent('invalid_target_blocked', cmd);
+      throw Object.assign(new Error('Invalid native password query target'), { code: 'unsupported_page' });
+    }
     const session = this.session;
     if (!session?.sharedKey) throw new Error('not unlocked');
     const sdata = session.serialize(await session.encrypt(payloadBody));
@@ -503,8 +519,8 @@ export class ApplePasswords {
   }
 
   async getLoginNamesForURL(tabId, url) {
+    const { hostname } = normalizeNativeTarget(tabId, url);
     if (!this.ready) throw new Error("not unlocked");
-    const { hostname } = new URL(url);
     return this._withLock(async () => {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const res = await this._encryptedQuery(
@@ -535,8 +551,8 @@ export class ApplePasswords {
   }
 
   async getPasswordForLoginName(tabId, url, loginName) {
+    const { hostname } = normalizeNativeTarget(tabId, url);
     if (!this.ready) throw new Error("not unlocked");
-    const { hostname } = new URL(url);
     return this._withLock(async () => {
       const res = await this._encryptedQuery(
         Command.GET_PASSWORD_FOR_LOGIN_NAME,
@@ -577,8 +593,8 @@ export class ApplePasswords {
   // The helper keys these requests by the *absolute frame URL* in frameURLs and does not
   // want the normal top-level url field used by password lookups.
   async _oneTimeCodeQuery(tabId, url, revealCode) {
+    const { href: frameUrl } = normalizeNativeTarget(tabId, url);
     if (!this.ready) throw new Error("not unlocked");
-    const frameUrl = new URL(url).href;
     const cmd = revealCode ? Command.DID_FILL_ONE_TIME_CODE : Command.GET_ONE_TIME_CODES;
     return this._withLock(async () => {
       const res = await this._encryptedQuery(
@@ -619,9 +635,9 @@ export class ApplePasswords {
   // helper's cmd-6 reply carries no decryptable body so we dont parse one - a page can
   // only ever trigger the OS prompt, never write to the vault silently
   async saveLogin(tabId, url, username, password) {
+    const { hostname } = normalizeNativeTarget(tabId, url);
     if (!this.ready) throw new Error("not unlocked");
     if (!password) throw new Error("no password to save");
-    const { hostname } = new URL(url);
     return this._withLock(async () => {
       this._assertCanSend(Command.SET_PASSWORD_FOR_LOGIN_NAME_URL);
       const sdata = this.session.serialize(

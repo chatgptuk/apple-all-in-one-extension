@@ -163,6 +163,12 @@ function safeFailureMessage(result) {
   return failureMessage(failureReason(result), appResolvedLanguage() === 'zh-CN');
 }
 
+// An unsupported frame never reaches the helper, so "click again" would fail again.
+function inlineLookupError(res, retryMessage) {
+  if (res?.ok || res?.locked) return '';
+  return res?.reason === 'unsupported_page' ? safeFailureMessage(res) : retryMessage;
+}
+
 function loginMetadata(login) {
   return { username: typeof login?.username === 'string' ? login.username : '',
     sourceWebsite: typeof login?.sourceWebsite === 'string' ? login.sourceWebsite : '',
@@ -872,9 +878,7 @@ async function reloadUiState() {
         domain: item.domain || '',
         source: item.source || '',
       })) : [],
-      lookupError: !res?.ok && !res?.locked
-        ? L('Verification-code lookup failed. Click the field again to retry.', '验证码查询失败，请再次点击输入框重试。')
-        : '',
+      lookupError: inlineLookupError(res, L('Verification-code lookup failed. Click the field again to retry.', '验证码查询失败，请再次点击输入框重试。')),
       canGenerate: false,
       canUnlock: window === window.top,
     };
@@ -895,9 +899,7 @@ async function reloadUiState() {
       host: location.hostname,
       locked: !!(res?.ok && res.locked),
       logins,
-      lookupError: !res?.ok && !res?.locked
-        ? L('Apple Passwords lookup failed. Click the field again to retry.', 'Apple 密码查询失败，请再次点击输入框重试。')
-        : '',
+      lookupError: inlineLookupError(res, L('Apple Passwords lookup failed. Click the field again to retry.', 'Apple 密码查询失败，请再次点击输入框重试。')),
       canGenerate: !hasSavedLogins && isNewPasswordField(anchor),
       canSmartSignup: !hasSavedLogins && wantsAlias && isSignupContext(anchor) && !!hme?.ready,
       hasAppleSignIn: !hasSavedLogins && !!appleSignInControl(),
@@ -1150,9 +1152,7 @@ async function openForField(field) {
       domain: item.domain || '',
       source: item.source || '',
     })) : [],
-    lookupError: !res?.ok && !res?.locked
-      ? L('Verification-code lookup failed. Click the field again to retry.', '验证码查询失败，请再次点击输入框重试。')
-      : '',
+    lookupError: inlineLookupError(res, L('Verification-code lookup failed. Click the field again to retry.', '验证码查询失败，请再次点击输入框重试。')),
     canGenerate: false,
     canUnlock: window === window.top,
   } : {
@@ -1161,9 +1161,7 @@ async function openForField(field) {
     host: location.hostname,
     locked: !!(res?.ok && res.locked),
     logins,
-    lookupError: !res?.ok && !res?.locked
-      ? L('Apple Passwords lookup failed. Click the field again to retry.', 'Apple 密码查询失败，请再次点击输入框重试。')
-      : '',
+    lookupError: inlineLookupError(res, L('Apple Passwords lookup failed. Click the field again to retry.', 'Apple 密码查询失败，请再次点击输入框重试。')),
     canGenerate: !hasSavedLogins && isNewPasswordField(field),
     canSmartSignup: sitePreferences.privateSignup && !hasSavedLogins && isHideEmailField(field) && isSignupContext(field) && !!hme?.ready,
     hasAppleSignIn: !hasSavedLogins && !!appleSignInControl(),
