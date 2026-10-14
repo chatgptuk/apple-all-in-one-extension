@@ -172,7 +172,8 @@ async function sendToPasswordContent(tabId, message, frameId = 0, binding) {
   }
 }
 
-async function preparePasswordFill(tabId, url, frameId = 0, documentId, requestDocumentToken) {
+// `purpose` lets the page pick a code box for OTP fills and a sign-in field otherwise.
+async function preparePasswordFill(tabId, url, frameId = 0, documentId, requestDocumentToken, purpose = 'login') {
   if (!await isPasswordFillAllowed(url)) throw new Error('refusing to fill on a non-HTTPS page');
   const expectedOrigin = new URL(url).origin;
   // A content script's sender URL can predate an SPA's locale/route rewrite. Bind
@@ -182,7 +183,7 @@ async function preparePasswordFill(tabId, url, frameId = 0, documentId, requestD
     ...(documentId ? { documentId } : {}),
     ...(requestDocumentToken ? { expectedDocumentToken: requestDocumentToken } : {}),
   } : undefined;
-  const target = await sendToPasswordContent(tabId, { type: 'prepareFill', expectedOrigin }, frameId, requestBinding);
+  const target = await sendToPasswordContent(tabId, { type: 'prepareFill', expectedOrigin, purpose }, frameId, requestBinding);
   let currentUrl;
   try { currentUrl = new URL(target?.href); } catch {}
   if (!target?.ok || typeof target.documentToken !== 'string' || !target.documentToken ||
@@ -487,7 +488,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!await isPasswordFillAllowed(frameUrl)) {
             return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS frame" });
           }
-          const binding = await preparePasswordFill(sender.tab.id, frameUrl, frameId, sender.documentId, msg.documentToken);
+          const binding = await preparePasswordFill(sender.tab.id, frameUrl, frameId, sender.documentId, msg.documentToken, 'otp');
           await ensureConnected();
           if (!client.ready) return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
 
@@ -647,7 +648,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             return sendResponse({ ok: false, error: "refusing to fill on a non-HTTPS page" });
           }
           const detailsOnly = msg.mode === 'details';
-          const binding = detailsOnly ? { expectedHref: tab.url } : await preparePasswordFill(tab.id, tab.url);
+          const binding = detailsOnly ? { expectedHref: tab.url } : await preparePasswordFill(tab.id, tab.url, 0, undefined, undefined, 'otp');
           await ensureConnected();
           if (!client.ready) return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
           const items = await client.getOneTimeCodeForURL(tab.id, binding.expectedHref);

@@ -30,6 +30,8 @@ test('HTTP prepareFill creates a fresh one-use lease and retains origin checks',
     deepActiveElement: () => null,
     uiAnchor: null, fillAnchor: null, pendingFill: null,
     firstVisibleOtpField: () => null,
+    isPasswordField: () => false,
+    isUsernameField: () => false,
     document: { querySelectorAll: () => [] },
   });
   const prepare = (origin = location.origin) => {

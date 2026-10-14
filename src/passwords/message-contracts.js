@@ -49,7 +49,7 @@ export function validContentFillRequest(input) {
   for (const key of ['expectedOrigin', 'expectedHost', 'expectedHref', 'expectedDocumentToken', 'targetToken']) {
     if (m[key] !== undefined && !text(m[key], key === 'expectedHref' ? 16384 : 2048)) return false;
   }
-  if (m.type === 'prepareFill') return true;
+  if (m.type === 'prepareFill') return m.purpose === undefined || m.purpose === 'login' || m.purpose === 'otp';
   if (!text(m.expectedDocumentToken, 128) || !m.expectedDocumentToken || !text(m.targetToken, 128) || !m.targetToken) return false;
   if (m.type === 'fill') return text(m.username) && text(m.password, 32768) && !!m.password;
   if (m.type === 'fillOtp') return text(m.code, 128) && !!m.code;

@@ -9,6 +9,8 @@ import {
 const EMAIL_INPUT_QUERY =
   'input[type="email"], input[name="email"], input[id="email"], input[autocomplete="email"], input[autocomplete="username"]';
 
+const EMAIL_HINT = /e-?mail|邮箱|郵箱|电子邮件|電子郵件|メール/i;
+
 const CONTEXT_TARGET_TTL_MS = 120_000;
 const TOAST_DURATION_MS = 2800;
 
@@ -67,13 +69,28 @@ const setEditableValue = (target: EditableTarget, value: string) => {
   target.focus();
 };
 
-const activeEmailInput = () => {
-  const el = document.activeElement;
-  return el instanceof HTMLInputElement && el.matches(EMAIL_INPUT_QUERY) ? el : undefined;
+// The popup message reaches every frame. Only the frame holding the user's focused email field,
+// or else the top frame's first *visible* email field, may take the address; returning
+// undefined everywhere else lets that frame's answer reach the popup.
+const autofillTarget = (): HTMLInputElement | null | undefined => {
+  const active = document.activeElement;
+  if (active instanceof HTMLIFrameElement || active instanceof HTMLFrameElement) return undefined;
+  if (
+    active instanceof HTMLInputElement &&
+    isVisibleEditableTarget(active) &&
+    (active.matches(EMAIL_INPUT_QUERY) ||
+      (['text', 'email', ''].includes((active.type || 'text').toLowerCase()) &&
+        EMAIL_HINT.test(`${active.name} ${active.id} ${active.placeholder} ${active.getAttribute('aria-label') || ''}`)))
+  ) {
+    return active;
+  }
+  if (window !== window.top) return undefined;
+  return (
+    Array.from(document.querySelectorAll<HTMLInputElement>(EMAIL_INPUT_QUERY)).find(
+      isVisibleEditableTarget
+    ) || null
+  );
 };
-
-const firstEmailInput = () =>
-  document.querySelector<HTMLInputElement>(EMAIL_INPUT_QUERY) || undefined;
 
 const hoveredEditableTarget = () => {
   try {
@@ -249,12 +266,13 @@ export default async function main(): Promise<void> {
 
     switch (message.type) {
       case MessageType.Autofill: {
-        const input = activeEmailInput() || firstEmailInput();
+        const input = autofillTarget();
+        if (input === undefined) return undefined;
         if (input) {
           setNativeInputValue(input, message.data as string);
           input.focus();
         }
-        return undefined;
+        return Promise.resolve({ filled: !!input });
       }
       case MessageType.ActiveInputElementWrite: {
         return (async (): Promise<ActiveInputElementWriteResponse> => {

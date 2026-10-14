@@ -5,6 +5,7 @@ import { webcrypto } from 'node:crypto';
 import { randomToken } from '../src/passwords/random-token.js';
 import { normalizeNativeTarget } from '../src/passwords/core/native-target.js';
 import * as contracts from '../src/passwords/message-contracts.js';
+import { deepInputs, passwordRole } from '../src/passwords/form-context.js';
 
 export const read = (path) =>
   readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -57,6 +58,13 @@ export function functionsFrom(path, names, globals = {}) {
   const walk = (node) => {
     if (ts.isFunctionDeclaration(node) && names.includes(node.name?.text))
       bodies.push(node.getText(tree));
+    // Shared hint patterns are top-level constants; allow tests to load them by name too.
+    if (
+      ts.isVariableStatement(node) &&
+      node.declarationList.declarations.length === 1 &&
+      names.includes(node.declarationList.declarations[0].name.getText(tree))
+    )
+      bodies.push(node.getText(tree));
     ts.forEachChild(node, walk);
   };
   walk(tree);
@@ -78,10 +86,12 @@ export function functionsFrom(path, names, globals = {}) {
   vm.runInContext(bodies.join('\n'), context);
   return context;
 }
+// The content listener delegates fill-target choice to these real helpers, evaluated in the
+// same context so they see each test's DOM stubs.
 export function contentMessageHandler(globals) {
-  return runtimeMessageHandler('src/passwords/content.js', globals);
+  return runtimeMessageHandler('src/passwords/content.js', globals, ['fillTargetFor', 'bestLoginField']);
 }
-export function runtimeMessageHandler(path, globals) {
+export function runtimeMessageHandler(path, globals, helpers = []) {
   const source = read(path);
   const tree = ts.createSourceFile(
     path,
@@ -91,12 +101,15 @@ export function runtimeMessageHandler(path, globals) {
     ts.ScriptKind.JS
   );
   let handler;
+  const bodies = [];
   const walk = (node) => {
     if (
       ts.isCallExpression(node) &&
       node.expression.getText(tree) === 'chrome.runtime.onMessage.addListener'
     )
       handler = node.arguments[0].getText(tree);
+    if (ts.isFunctionDeclaration(node) && helpers.includes(node.name?.text))
+      bodies.push(node.getText(tree));
     ts.forEachChild(node, walk);
   };
   walk(tree);
@@ -106,11 +119,14 @@ export function runtimeMessageHandler(path, globals) {
     randomToken,
     ...contracts,
     normalizeNativeTarget,
+    deepInputs,
+    passwordRole,
     recordDiagnostic: () => {},
     Date,
     scheduleSecretCleanup: () => {},
     ...globals,
   });
-  vm.runInContext(`globalThis.listener = ${handler}`, context);
+  if (bodies.length !== helpers.length) throw new Error(`Missing helper in ${path}`);
+  vm.runInContext(`${bodies.join('\n')}\nglobalThis.listener = ${handler}`, context);
   return context;
 }

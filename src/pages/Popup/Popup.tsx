@@ -309,6 +309,10 @@ const SiteIcon = ({
 };
 
 
+// Content scripts answer only from the frame that took the address; no answer means no field.
+const autofillAddress = async (address: string) =>
+  ((await sendMessageToTab(MessageType.Autofill, address)) as { filled?: boolean } | undefined)?.filled === true;
+
 const getActiveTabForPopup = async () => {
   let [tab] = await browser.tabs.query({ active: true, currentWindow: true });
   if (!tab) [tab] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
@@ -1427,7 +1431,7 @@ const GenerateView = ({ client, onCreated }: { client: ICloudClient; onCreated: 
       if (!mounted.current) return;
       if (autofill && !IS_MANAGER) {
         try {
-          await sendMessageToTab(MessageType.Autofill, result.hme);
+          if (!(await autofillAddress(result.hme))) throw new Error('No email field');
         } catch {
           if (mounted.current) setError(tr('The address was created, but this page could not be autofilled. Copy it instead.', '地址已创建，但无法在此页面自动填充。请改为复制地址。'));
         }
@@ -1510,7 +1514,9 @@ const GenerateView = ({ client, onCreated }: { client: ICloudClient; onCreated: 
           </div>
           <div className="hme-success-buttons">
             <button type="button" disabled={copyStatus === 'copying'} onClick={copy}><Symbol name={copyStatus === 'copied' ? 'check' : 'copy'} size={16} />{copyStatus === 'copying' ? tr('Copying…', '正在复制…') : copyStatus === 'copied' ? tr('Copied', '已复制') : tr('Copy', '复制')}</button>
-            {!IS_MANAGER && <button type="button" onClick={() => sendMessageToTab(MessageType.Autofill, reserved.hme).catch(() => setError(tr('This page could not be autofilled. Copy the address and paste it manually.', '无法在此页面自动填充。请复制地址并手动粘贴。')))}>
+            {!IS_MANAGER && <button type="button" onClick={() => autofillAddress(reserved.hme).then(
+              (filled) => { if (!filled) setError(tr('No email field was found on this page. Select the field, then retry, or copy the address.', '此页面未找到邮箱输入框。请先点击输入框再重试，或复制地址。')); },
+              () => setError(tr('This page could not be autofilled. Copy the address and paste it manually.', '无法在此页面自动填充。请复制地址并手动粘贴。')))}>
               <Symbol name="autofill" size={16} />{tr('Autofill', '自动填充')}
             </button>}
           </div>
@@ -2113,8 +2119,8 @@ const DetailsView = ({
     if (IS_MANAGER) return;
     setError(undefined);
     try {
-      await sendMessageToTab(MessageType.Autofill, item.hme);
-      setMetadataMessage(tr('Address sent to the page. If the field is unchanged, select it and retry.', '地址已发送到网页。如输入框未变化，请先点击输入框再重试。'));
+      if (await autofillAddress(item.hme)) setMetadataMessage(tr('Filled on the page.', '已填充网页。'));
+      else setError(tr('No email field was found on this page. Select the field, then retry, or copy the address.', '此页面未找到邮箱输入框。请先点击输入框再重试，或复制地址。'));
     } catch { setError(tr('This page could not be autofilled. Copy the address and paste it manually.', '无法在此页面自动填充。请复制地址并手动粘贴。')); }
   };
 

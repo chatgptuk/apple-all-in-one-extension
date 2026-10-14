@@ -1,4 +1,4 @@
-import { formScope, passwordRole, generatedPasswordTargets } from './form-context.js';
+import { formScope, passwordRole, generatedPasswordTargets, deepInputs } from './form-context.js';
 import { positivePasswordLength, passwordHints } from './password-rules.js';
 import { randomToken } from './random-token.js';
 import { failureReason, failureMessage, validContentFillRequest } from './message-contracts.js';
@@ -32,6 +32,10 @@ try {
 
 const OTP_AUTOCOMPLETE = /one-time-code/i;
 const OTP_HINT = /\b(otp|one[\s-]?time(?:[\s-]?(?:password|passcode|code))?|verification(?:[\s-]?code)?|2fa|mfa|two[\s-]?factor(?:[\s-]?authentication)?(?:[\s-]?code)?|auth(?:entication)?[\s-]?code|authenticator(?:[\s-]?app)?(?:[\s-]?code)?|sms[\s-]?code|security[\s-]?code|passcode|token(?:[\s-]?code)?)\b/i;
+// Authenticator wording only: a bare 验证码 is just as often an image captcha or SMS code.
+const OTP_HINT_CJK = /动态码|動態碼|动态口令|動態口令|动态密码|動態密碼|两步验证|兩步驗證|二次验证|二次驗證|双重验证|雙重驗證|身份验证器|身份驗證器|谷歌验证|谷歌驗證|一次性密码|一次性密碼/;
+const USERNAME_HINT = /\b(user|login|signin|sign[\s-]?in|loginid|account|identifier)\b|账号|帳號|賬號|账户|帳戶|用户名|用戶名|登录名|登錄名|登入名|手机号|手機號|邮箱|郵箱|电子邮件|電子郵件/i;
+const CAPTCHA_HINT = /captcha|checkcode|imgcode|图形|图片|圖形|圖片|看不清|换一张|換一張/i;
 const NONLOGIN_HINT = /\b(search|find|filter|query|lookup|tag|tags|mention|comment|reply|message|chat|post|caption|note|subject|topic|recipient|address|street|city|state|zip|postal|country|first[\s-]?name|last[\s-]?name|full[\s-]?name|company|title|url|website|coupon|promo|voucher|gift[\s-]?card|amount|quantity|qty|price|card[\s-]?number|cvv|cvc|expiry|account[\s-]?(?:number|no|holder)|routing|iban|invoice|order|tracking|keyword)\b/i;
 const LOGINISH = /log[\s_-]?in|sign[\s_-]?in|auth|session|sso|oauth|account|idp|passport/i;
 const SUBMITY_LABEL = /\b(sign[\s-]?in|sign[\s-]?up|log[\s-]?in|register|create[\s-]?account|save|update|reset|confirm|done|set|apply|activate|enroll|finish|proceed|verify|join|change[\s-]?password|continue|next|submit)\b/i;
@@ -77,6 +81,7 @@ let lastSaveKey = '';
 let lastSaveAt = 0;
 let lastSaveTarget = null;
 let lastGesture = { at: 0, kind: '', target: null };
+let fillFocusing = false;
 let offerSeq = 0;
 let aliasLookupSeq = 0;
 
@@ -232,6 +237,15 @@ async function sendRuntimeMessage(message) {
   }
 }
 
+// Names and ids are identifiers (txtUserName, j_username, login-name). Split them into words
+// so the word-boundary hints also recognize camelCase, underscore and bracketed names.
+function identifierWords(value) {
+  return String(value || '')
+    .replace(/([a-z\d])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[_\-.$:[\]]+/g, ' ');
+}
+
 function attrBlob(el) {
   let labelText = '';
   try {
@@ -239,7 +253,7 @@ function attrBlob(el) {
     const lb = el.getAttribute('aria-labelledby');
     if (lb) labelText += ' ' + lb.split(/\s+/).map((id) => el.ownerDocument.getElementById(id)?.textContent || '').join(' ');
   } catch {}
-  return [el.name, el.id, el.getAttribute('aria-label'), el.placeholder, el.getAttribute('autocomplete'), labelText]
+  return [el.name, el.id, identifierWords(el.name), identifierWords(el.id), el.getAttribute('aria-label'), el.placeholder, el.getAttribute('autocomplete'), labelText]
     .filter(Boolean)
     .join(' ');
 }
@@ -250,7 +264,7 @@ function isOtpField(el) {
   if (OTP_AUTOCOMPLETE.test(ac)) return true;
 
   const blob = attrBlob(el);
-  if (OTP_HINT.test(blob)) return true;
+  if (OTP_HINT.test(blob) || OTP_HINT_CJK.test(blob)) return true;
 
   // A large number of government/bank 2FA pages omit autocomplete=one-time-code.
   // Recognize the common 4–8 digit numeric-code shape without treating arbitrary
@@ -312,7 +326,7 @@ function hasStrongIdentitySignal(el) {
   const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
   if (ac.includes('username') || ac.includes('email') || ac.includes('webauthn')) return true;
   if (t === 'email') return true;
-  return /\b(e[\s-]?mail|sign[\s-]?in[\s-]?id|log[\s-]?in[\s-]?id|user[\s-]?id|username|passkey)\b/i.test(attrBlob(el));
+  return /\b(e[\s-]?mail|sign[\s-]?in[\s-]?id|log[\s-]?in[\s-]?id|user[\s-]?id|user[\s-]?name|passkey)\b/i.test(attrBlob(el));
 }
 
 function isUsernameField(el) {
@@ -323,7 +337,20 @@ function isUsernameField(el) {
   if (hasStrongIdentitySignal(el)) return true;
   const blob = attrBlob(el);
   if (NONLOGIN_HINT.test(blob)) return false;
-  return /\b(user|login|signin|sign[\s-]?in|loginid)\b/i.test(blob);
+  return USERNAME_HINT.test(blob);
+}
+
+// A plain text box that is not a search, captcha, address or other non-login field. Browsers use
+// "the text input before the password" when a username field carries no recognizable hint.
+function isPlainTextEntry(el) {
+  if (!(el instanceof HTMLInputElement) || isSearchOrComboField(el)) return false;
+  if (!['text', 'email', 'tel', 'number', ''].includes(String(el.type || 'text').toLowerCase())) return false;
+  const blob = attrBlob(el);
+  return !NONLOGIN_HINT.test(blob) && !CAPTCHA_HINT.test(blob);
+}
+
+function isLikelyUsernameInput(el) {
+  return isPlainTextEntry(el) && String(el.type).toLowerCase() !== 'number' && !isOtpField(el);
 }
 
 function isVisible(el) {
@@ -335,8 +362,8 @@ function isVisible(el) {
   return r.width >= 4 && r.height >= 4;
 }
 
-function isFillable(el) {
-  if (!el?.isConnected || el.disabled || el.readOnly) return false;
+function isFillable(el, { allowReadOnly = false } = {}) {
+  if (!el?.isConnected || el.disabled || (el.readOnly && !allowReadOnly)) return false;
   const s = getComputedStyle(el);
   if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') return false;
   if (el.offsetParent === null && s.position !== 'fixed') return false;
@@ -521,11 +548,6 @@ function setValue(el, value) {
   el.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-function domDistance(a, b) {
-  const all = Array.from(document.querySelectorAll('input'));
-  return all.indexOf(a) - all.indexOf(b);
-}
-
 function liveField(field) {
   if (!field || field.isConnected) return field;
   if (field.id) {
@@ -539,41 +561,56 @@ function liveField(field) {
   return anchorPwField(document) || field;
 }
 
-function fillCredentials(username, password, anchor) {
-  if (!(anchor instanceof HTMLInputElement) || !isFillable(anchor)) return false;
-  const inputs = Array.from(formScope(anchor).querySelectorAll('input'))
-    .filter((field) => isFillable(field) && field.form === anchor.form);
-  let passwords = inputs.filter((field) => isPasswordField(field) && !['new', 'confirm'].includes(passwordRole(field)));
-  let usernames = inputs.filter(isUsernameField);
-  const anchorForm = anchor?.form;
-  if (anchorForm) {
-    const pwInForm = passwords.filter((p) => p.form === anchorForm);
-    const userInForm = usernames.filter((u) => u.form === anchorForm);
-    if (pwInForm.length) passwords = pwInForm;
-    if (userInForm.length) usernames = userInForm;
+// Some pages keep inputs readonly until focused to defeat browser autofill. Focus the field as a
+// user would (synthetic events too: a page without system focus gets no focus event). A field
+// that stays readonly is genuinely not editable and is left alone.
+function writeField(field, value) {
+  if (field.readOnly) {
+    fillFocusing = true;
+    try {
+      field.focus({ preventScroll: true });
+      if (field.readOnly) {
+        field.dispatchEvent(new FocusEvent('focus'));
+        field.dispatchEvent(new FocusEvent('focusin', { bubbles: true, composed: true }));
+      }
+    } catch {} finally { fillFocusing = false; }
+    if (field.readOnly) return false;
   }
+  setValue(field, value);
+  return true;
+}
+
+function fillCredentials(username, password, anchor) {
+  if (!(anchor instanceof HTMLInputElement) || !isFillable(anchor, { allowReadOnly: true })) return false;
+  const inputs = deepInputs(formScope(anchor))
+    .filter((field) => field.form === anchor.form && isFillable(field, { allowReadOnly: true }));
+  const position = (field) => inputs.indexOf(field);
+  const passwordFields = inputs.filter(isPasswordField);
+  let passwords = passwordFields.filter((field) => !['new', 'confirm'].includes(passwordRole(field)));
+  // Login forms often mark their only password field new-password just to stop browser autofill.
+  if (!passwords.length && passwordFields.length === 1) passwords = passwordFields;
+  const usernames = inputs.filter(isUsernameField);
   let firstPw = passwords[0];
-  if (anchor && passwords.length > 1) {
-    firstPw = passwords.map((p) => ({ p, d: Math.abs(domDistance(anchor, p)) })).sort((a, b) => a.d - b.d)[0].p;
+  if (passwords.length > 1) {
+    const at = position(anchor);
+    firstPw = passwords.reduce((best, field) => Math.abs(position(field) - at) < Math.abs(position(best) - at) ? field : best);
   }
   let userTarget = null;
   if (username) {
-    if (anchor && isUsernameField(anchor)) userTarget = anchor;
-    else if (usernames.length) {
-      userTarget = usernames[0];
-      if (firstPw) {
-        const before = usernames.filter((u) => u.compareDocumentPosition(firstPw) & Node.DOCUMENT_POSITION_FOLLOWING);
-        if (before.length) userTarget = before[before.length - 1];
-      }
+    if (isUsernameField(anchor)) userTarget = anchor;
+    else {
+      const preceding = firstPw ? usernames.filter((field) => position(field) < position(firstPw)) : [];
+      userTarget = preceding.filter(hasStrongIdentitySignal).at(-1) || preceding.at(-1) || usernames[0] || null;
+    }
+    if (!userTarget) {
+      userTarget = firstPw
+        ? inputs.slice(0, position(firstPw)).filter(isLikelyUsernameInput).at(-1) || null
+        : isLikelyUsernameInput(anchor) ? anchor : null;
     }
   }
   let filled = false;
-  if (userTarget) {
-    setValue(userTarget, username);
-    filled = true;
-  }
-  if (password && firstPw) {
-    setValue(firstPw, password);
+  if (userTarget && writeField(userTarget, username)) filled = true;
+  if (password && firstPw && writeField(firstPw, password)) {
     everPassword.add(firstPw);
     filled = true;
   }
@@ -629,6 +666,28 @@ function firstVisibleOtpField() {
   return Array.from(document.querySelectorAll('input')).find((el) => isOtpField(el) && isVisible(el)) || null;
 }
 
+function bestLoginField() {
+  const fields = deepInputs(document).filter((field) => isFillable(field, { allowReadOnly: true }));
+  return fields.find((field) => isPasswordField(field) && !['new', 'confirm'].includes(passwordRole(field))) ||
+    fields.find((field) => isUsernameField(field) && isLoginField(field)) ||
+    fields.find(isPasswordField) || fields.find(isUsernameField) || null;
+}
+
+// A focused search box, checkbox or username field must not divert a credential or a code.
+// Prefer a field that suits the request; the focused field itself is only a last resort.
+function fillTargetFor(purpose) {
+  const active = deepActiveElement();
+  const chosen = [uiAnchor, active, fillAnchor]
+    .filter((field) => field instanceof HTMLInputElement && isFillable(field, { allowReadOnly: true }));
+  const focused = chosen.includes(active) ? active : null;
+  if (purpose === 'otp') {
+    return chosen.find(isOtpField) || firstVisibleOtpField() ||
+      (focused && isPlainTextEntry(focused) && !isUsernameField(focused) ? focused : null);
+  }
+  return chosen.find((field) => isPasswordField(field) || isUsernameField(field)) || bestLoginField() ||
+    (focused && isLikelyUsernameInput(focused) ? focused : null);
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type === 'hme:list-changed' && sender.id === chrome.runtime.id) {
     if (uiAnchor && uiState && !signupInFlight) refreshExistingHme(uiAnchor, ++aliasLookupSeq).catch(() => {});
@@ -652,26 +711,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: false, filled: false, reason: 'target_changed', error: 'The sign-in document changed.' });
       return true;
     }
-    const active = deepActiveElement();
-    const anchor = uiAnchor || (active instanceof HTMLInputElement && isFillable(active) ? active : null) ||
-      (fillAnchor?.isConnected && isFillable(fillAnchor) ? fillAnchor : null) || firstVisibleOtpField() ||
-      Array.from(document.querySelectorAll('input')).find((field) => isFillable(field) && (isUsernameField(field) || isPasswordField(field))) || null;
-    pendingFill = { token: randomToken(), anchor, value: anchor?.value, href: location.href, at: Date.now() };
+    const purpose = msg.purpose === 'otp' ? 'otp' : 'login';
+    const anchor = fillTargetFor(purpose);
+    pendingFill = { token: randomToken(), purpose, anchor, value: anchor?.value, href: location.href, at: Date.now() };
     scheduleSecretCleanup();
     sendResponse({ ok: true, documentToken, targetToken: pendingFill.token, href: pendingFill.href });
     return true;
   }
   const target = pendingFill;
   if (msg.expectedDocumentToken !== documentToken || !target || msg.targetToken !== target.token ||
-      target.href !== location.href || Date.now() - target.at > 90_000 || (target.anchor && (!isFillable(target.anchor) || target.anchor.value !== target.value))) {
+      (msg.type === 'fillOtp') !== (target.purpose === 'otp') ||
+      target.href !== location.href || Date.now() - target.at > 90_000 ||
+      (target.anchor && (!isFillable(target.anchor, { allowReadOnly: true }) || target.anchor.value !== target.value))) {
     sendResponse({ ok: false, filled: false, reason: 'target_changed', error: 'The original sign-in field is no longer available.' });
     return true;
   }
   pendingFill = null;
   scheduleSecretCleanup();
   if (msg.type === 'fillOtp') {
-    const anchor = target.anchor && isOtpField(target.anchor) ? target.anchor : null;
-    const filled = fillOneTimeCode(msg.code, anchor);
+    // prepareFill already chose a code field (or the user's focused box) for this request.
+    const filled = !!target.anchor && fillOneTimeCode(msg.code, target.anchor);
     sendResponse({ ok: true, filled, reason: filled ? undefined : 'no_otp_field' });
     return true;
   }
@@ -1187,6 +1246,7 @@ function deepActiveElement() {
 }
 
 document.addEventListener('focusin', (e) => {
+  if (fillFocusing) return;
   const field = e.composedPath?.()[0] || e.target;
   if (uiHost && field !== uiAnchor) closeUi();
   if (field instanceof HTMLInputElement && field.type === 'password') everPassword.add(field);

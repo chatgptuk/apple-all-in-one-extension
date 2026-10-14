@@ -9,6 +9,7 @@ import { read, deferred } from './source-harness.mjs';
 function mountGeneration(options = {}) {
   const source = read('src/pages/Popup/Popup.tsx');
   const component = source.slice(source.indexOf('const GenerateView ='), source.indexOf('const formatActivityTime'));
+  const autofillHelper = source.slice(source.indexOf('const autofillAddress ='), source.indexOf('const getActiveTabForPopup'));
   const slots = [], effects = [], calls = { generate: [], reserve: [], copy: [], fill: [], created: 0 };
   let cursor = 0, tree, unmounted = false, lateWrites = 0;
   let props = { client: { account: 'a', revision: 1 }, onCreated: () => calls.created++ };
@@ -48,13 +49,13 @@ function mountGeneration(options = {}) {
       calls.copy.push(value);
       return options.copy?.(value, calls.copy.length) ?? Promise.resolve();
     } } },
-    sendMessageToTab: async (...args) => { calls.fill.push(args); },
+    sendMessageToTab: async (...args) => { calls.fill.push(args); return 'fillResult' in options ? options.fillResult : { filled: true }; },
     MessageType: { Autofill: 0 },
     getActiveTabForPopup: () => options.tab?.() ?? Promise.resolve({ url: 'https://example.test/login' }),
     IS_MANAGER: options.manager ?? false,
     tr: (en) => en, Symbol: 'Symbol', Spinner: 'Spinner', ErrorBanner: 'ErrorBanner', URL,
   });
-  vm.runInContext(ts.transpileModule(`${component}\nglobalThis.GenerateView = GenerateView;`, {
+  vm.runInContext(ts.transpileModule(`${autofillHelper}\n${component}\nglobalThis.GenerateView = GenerateView;`, {
     compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
   }).outputText, context);
   const render = () => {
@@ -171,6 +172,16 @@ test('explicit create-and-fill still fills if auto-copy is denied', async () => 
   assert.equal(ui.calls.fill.length, 1);
   assert.equal(ui.calls.fill[0][1], 'candidate-1@icloud.com');
   assert.match(ui.text(), /copying failed/);
+});
+
+test('create-and-fill reports a page without an email field instead of claiming success', async () => {
+  // Frames without a usable field stay silent, so the popup receives no answer at all.
+  const ui = mountGeneration({ fillResult: undefined });
+  await ui.flush();
+  await ui.button('Create and Fill').onClick();
+  await ui.flush();
+  assert.equal(ui.calls.fill.length, 1);
+  assert.match(ui.text(), /could not be autofilled/);
 });
 
 test('failed reservation never copies and leaves an explicit retry available', async () => {
