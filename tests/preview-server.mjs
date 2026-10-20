@@ -10,6 +10,13 @@ const mocks = readFileSync(
 );
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
+  if (url.pathname === '/username-first-preview.html') {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Identifier-first fill QA</title><script>${mocks}</script><style>body{font:16px system-ui;max-width:620px;margin:60px auto;padding:20px}input,button{font:inherit;padding:14px;border-radius:10px;margin:12px 0;box-sizing:border-box}input{width:100%;border:1px solid #aaa}button{border:0;background:#111;color:white}output{display:block;padding:16px;background:#eef7ef}small{color:#555}</style></head><body><h1>Phone number or email</h1><small>Local QA · production content script · synthetic account and transport</small><label><input id="PHONE_NUMBER_or_EMAIL_ADDRESS" type="email" name="email" autocomplete="email webauthn" inputmode="email" placeholder="Enter phone number or email"></label><button id="qa-fill" type="button">Fill synthetic saved account</button><output id="qa-result" role="status">Not filled yet</output><script>
+      document.querySelector('#qa-fill').onclick=async()=>{const result=await chrome.runtime.sendMessage({type:'inlineFill',loginName:{username:'synthetic@example.test'}});document.querySelector('#qa-result').textContent=result.filled?'Account filled successfully':'Fill failed: '+result.reason;};
+    </script><script src="/passwordsContent.bundle.js"></script></body></html>`);
+    return;
+  }
   if (url.pathname === '/icons-preview.html') {
     const icons = JSON.parse(readFileSync(new URL('../src/icons/symbols.json', import.meta.url), 'utf8'));
     res.setHeader('Content-Type', 'text/html; charset=utf-8');

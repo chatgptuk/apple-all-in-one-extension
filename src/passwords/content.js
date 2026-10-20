@@ -617,6 +617,15 @@ function fillCredentials(username, password, anchor) {
   return filled;
 }
 
+// Identifier-first sign-in pages do not need a password read (or Touch ID) yet.
+// Keep this separate from fillCredentials so a later password field cannot receive
+// a secret through a lease that was prepared for a username-only step.
+function isUsernameOnlyTarget(anchor) {
+  return anchor instanceof HTMLInputElement && isFillable(anchor, { allowReadOnly: true }) &&
+    isUsernameField(anchor) && !deepInputs(formScope(anchor)).some((field) =>
+      field.form === anchor.form && isPasswordField(field) && isFillable(field, { allowReadOnly: true }));
+}
+
 function fillGeneratedPassword(field, password) {
   if (!(field instanceof HTMLInputElement) || !password) return false;
   const targets = generatedPasswordTargets(field, isFillable);
@@ -693,7 +702,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (uiAnchor && uiState && !signupInFlight) refreshExistingHme(uiAnchor, ++aliasLookupSeq).catch(() => {});
     return false;
   }
-  if (!['prepareFill', 'fill', 'fillOtp'].includes(msg?.type)) return false;
+  if (!['prepareFill', 'fill', 'fillUsername', 'fillOtp'].includes(msg?.type)) return false;
   if (sender.id !== chrome.runtime.id) {
     sendResponse({ ok: false, filled: false, error: 'forbidden' });
     return true;
@@ -703,7 +712,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if ((msg.expectedOrigin && location.origin !== msg.expectedOrigin) || (msg.expectedHref && location.href !== msg.expectedHref) || (msg.expectedHost && location.hostname.toLowerCase() !== msg.expectedHost)) {
-    sendResponse({ ok: false, filled: false, error: 'origin mismatch' });
+    sendResponse({ ok: false, filled: false, reason: 'target_changed', error: 'origin mismatch' });
     return true;
   }
   if (msg.type === 'prepareFill') {
@@ -713,14 +722,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     const purpose = msg.purpose === 'otp' ? 'otp' : 'login';
     const anchor = fillTargetFor(purpose);
-    pendingFill = { token: randomToken(), purpose, anchor, value: anchor?.value, href: location.href, at: Date.now() };
+    const usernameOnly = purpose === 'login' && isUsernameOnlyTarget(anchor);
+    pendingFill = { token: randomToken(), purpose, usernameOnly, anchor, value: anchor?.value, href: location.href, at: Date.now() };
     scheduleSecretCleanup();
-    sendResponse({ ok: true, documentToken, targetToken: pendingFill.token, href: pendingFill.href });
+    sendResponse({ ok: true, documentToken, targetToken: pendingFill.token, href: pendingFill.href, usernameOnly });
     return true;
   }
   const target = pendingFill;
   if (msg.expectedDocumentToken !== documentToken || !target || msg.targetToken !== target.token ||
       (msg.type === 'fillOtp') !== (target.purpose === 'otp') ||
+      (msg.type === 'fillUsername') !== !!target.usernameOnly ||
       target.href !== location.href || Date.now() - target.at > 90_000 ||
       (target.anchor && (!isFillable(target.anchor, { allowReadOnly: true }) || target.anchor.value !== target.value))) {
     sendResponse({ ok: false, filled: false, reason: 'target_changed', error: 'The original sign-in field is no longer available.' });
@@ -728,6 +739,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   pendingFill = null;
   scheduleSecretCleanup();
+  if (msg.type === 'fillUsername') {
+    if (!isUsernameOnlyTarget(target.anchor)) {
+      sendResponse({ ok: false, filled: false, reason: 'target_changed' });
+      return true;
+    }
+    const filled = writeField(target.anchor, msg.username);
+    sendResponse({ ok: true, filled, reason: filled ? undefined : 'no_login_field' });
+    return true;
+  }
   if (msg.type === 'fillOtp') {
     // prepareFill already chose a code field (or the user's focused box) for this request.
     const filled = !!target.anchor && fillOneTimeCode(msg.code, target.anchor);

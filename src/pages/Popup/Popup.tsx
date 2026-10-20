@@ -541,6 +541,9 @@ const fillFailureGuidance = (reason?: string) => {
     case 'native_busy': return tr('Another Apple authorization is in progress. Finish it before retrying.', '另一项 Apple 授权正在进行，请处理完成后重试。');
     case 'authorization_cancelled': return tr('System authorization was not completed. You can retry when ready.', '系统授权未完成。准备好后可以重新尝试。');
     case 'ambiguous_account': return tr('Apple returned multiple matching accounts. Open Apple Passwords to select the exact entry.', 'Apple 返回了多个同名匹配账号。请在 Apple 密码中选择准确的条目。');
+    case 'saved_login_unavailable': return tr('Apple did not return a usable saved login. Check the account and website in Apple Passwords, then refresh saved items.', 'Apple 未返回可用登录项。请在 Apple 密码中检查账号和网站，再刷新已保存项目。');
+    case 'native_query_failed': return tr('Apple could not complete the saved-login request. Check the entry in Apple Passwords and retry.', 'Apple 未能完成登录项读取。请在 Apple 密码中检查该记录后重试。');
+    case 'content_unavailable': return tr('The page did not receive the fill request. Refresh the webpage and select the sign-in field again.', '网页未收到填充请求。请刷新网页，再点击登录输入框重试。');
     case 'unavailable': return tr('The operation could not be completed. Retry, or copy the diagnostic report from Website Settings & Status.', '操作未能完成，请重试；如反复出现，请在“网站设置与状态”中复制诊断报告。');
     default: return tr('This action could not be completed. Select the field again and retry, or copy the details.', '本次操作未完成。请重新选择输入框后重试，或复制所需内容。');
   }
@@ -944,9 +947,14 @@ const PasswordsView = () => {
       error?: string;
       reason?: string;
       detail?: PasswordDetail;
+      usernameOnly?: boolean;
     }>({ type: 'fillOnPage', loginName: { username }, mode }, 65_000);
     if (sequence !== detailLoadSequence.current) return;
     setBusy(undefined);
+    if (res?.ok && res.filled && res.usernameOnly) {
+      setDetailNotice(tr('Username filled. Continue on the website. You can open password details separately.', '已填入账号，请在网站上继续。也可以单独查看密码详情。'));
+      return;
+    }
     if (!res?.ok || !res.detail) {
       setError(fillFailureGuidance(res?.reason));
       return;
@@ -1130,9 +1138,12 @@ const PasswordsView = () => {
                 {expanded && (
                   <div className="password-detail-card">
                     {!loginDetail ? (
-                      <div className="password-detail-loading">
-                        {loginBusy ? <><Spinner compact /> <span>{tr('Opening saved login…', '正在打开已保存登录…')}</span></> : <span>{tr('Details unavailable', '详情不可用')}</span>}
-                      </div>
+                      <>
+                        <div className="password-detail-loading">
+                          {loginBusy ? <><Spinner compact /> <span>{tr('Opening saved login…', '正在打开已保存登录…')}</span></> : <span role="status">{detailNotice || tr('Details unavailable', '详情不可用')}</span>}
+                        </div>
+                        {!loginBusy && <div className="password-entry-tools"><button type="button" disabled={!!busy} onClick={() => void fillAndShowLogin(login, loginKey, 'details')}>{tr('View Details Only', '仅查看详情')}</button></div>}
+                      </>
                     ) : (
                       <>
                         <div className="password-detail-identity">

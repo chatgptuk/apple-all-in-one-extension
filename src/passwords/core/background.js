@@ -152,7 +152,7 @@ function isMissingReceiverError(error) {
 // Injection happens only after a user-triggered fill and only into the requested frame.
 async function sendToPasswordContent(tabId, message, frameId = 0, binding) {
   // Re-read the site setting after Touch ID, including cache hits and refills.
-  if (message.type === 'fill' || message.type === 'fillOtp') {
+  if (message.type === 'fill' || message.type === 'fillUsername' || message.type === 'fillOtp') {
     if (!await isPasswordFillAllowed(binding?.expectedHref)) throw new Error('refusing to fill on a non-HTTPS page');
   }
   const options = binding?.documentId ? { documentId: binding.documentId } : { frameId };
@@ -192,7 +192,27 @@ async function preparePasswordFill(tabId, url, frameId = 0, documentId, requestD
       (requestDocumentToken && target.documentToken !== requestDocumentToken)) {
     throw new Error('The sign-in page changed. Select the field again.');
   }
-  return { expectedOrigin, expectedHref: target.href, expectedDocumentToken: target.documentToken, targetToken: target.targetToken, ...(documentId ? { documentId } : {}) };
+  return { expectedOrigin, expectedHref: target.href, expectedDocumentToken: target.documentToken, targetToken: target.targetToken,
+    ...(purpose === 'login' && target.usernameOnly === true ? { usernameOnly: true } : {}),
+    ...(documentId ? { documentId } : {}) };
+}
+
+async function fillUsernameOnly(tabId, username, binding, frameId = 0, popupTab) {
+  if (!client.ready) return { ok: false, filled: false, reason: 'locked' };
+  // Revalidate against this frame's saved-login metadata, never caller-supplied sites.
+  const logins = await client.getLoginNamesForURL(tabId, binding.expectedHref);
+  if (!username || !logins.some((login) => accountKey(login.username) === accountKey(username))) {
+    return { ok: false, filled: false, reason: 'saved_login_unavailable' };
+  }
+  if (!client.ready) return { ok: false, filled: false, reason: 'locked' };
+  if (popupTab) await ensurePopupTarget(popupTab);
+  const host = registrableHost(binding.expectedHref);
+  const response = await sendToPasswordContent(tabId, { type: 'fillUsername', username, expectedHost: host }, frameId, binding);
+  if (!response?.filled) return { ok: false, filled: false, reason: response?.reason || 'content_unavailable' };
+  recordMru(host, username);
+  lastFillByTab.set(tabId, { host, username });
+  while (lastFillByTab.size > 64) lastFillByTab.delete(lastFillByTab.keys().next().value);
+  return { ok: true, filled: true, usernameOnly: true };
 }
 
 // A connected native-messaging port already keeps Chrome's worker alive. Remove
@@ -532,6 +552,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const safeLogin = { username: msg.loginName?.username };
           const binding = await preparePasswordFill(sender.tab.id, frameUrl, frameId, sender.documentId, msg.documentToken);
           await ensureConnected();
+          if (binding.usernameOnly) return sendResponse(await fillUsernameOnly(sender.tab.id, safeLogin.username, binding, frameId));
           // cache hit skips the helper read and its Touch ID; miss reads then caches
           let cred = pwCacheGet(host, safeLogin.username);
           if (!cred) {
@@ -556,7 +577,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               return sendResponse({
                 ok: true,
                 filled: false,
-                reason: resp?.reason || 'unavailable',
+                reason: resp?.reason || 'content_unavailable',
               });
             }
             if (filled) {
@@ -565,7 +586,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               while (lastFillByTab.size > 64) lastFillByTab.delete(lastFillByTab.keys().next().value);
             }
           }
-          sendResponse({ ok: true, filled });
+          sendResponse({ ok: true, filled, ...(!cred ? { reason: 'saved_login_unavailable' } : {}) });
           break;
         }
 
@@ -776,6 +797,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!client.ready) {
             return sendResponse({ ok: false, locked: true, error: "Apple Passwords is locked" });
           }
+          if (!detailsOnly && binding.usernameOnly) {
+            await ensurePopupTarget(tab);
+            return sendResponse(await fillUsernameOnly(tab.id, msg.loginName.username, binding, 0, tab));
+          }
           let cred = pwCacheGet(host, msg.loginName?.username);
           if (!cred) {
             cred = await client.getPasswordForLoginName(tab.id, binding.expectedHref, msg.loginName);
@@ -789,7 +814,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               }
             : undefined;
           await ensurePopupTarget(tab);
-          if (detailsOnly) return sendResponse({ ok: !!detail, filled: false, detail, error: !detail ? 'Saved login unavailable' : undefined });
+          if (detailsOnly) return sendResponse({ ok: !!detail, filled: false, detail, reason: !detail ? 'saved_login_unavailable' : undefined });
           let filled = false;
           if (cred) {
             // content script re-checks expectedHost before filling
@@ -804,7 +829,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               return sendResponse({
                 ok: true,
                 filled: false,
-                reason: resp?.reason || 'unavailable',
+                reason: resp?.reason || 'content_unavailable',
                 detail,
               });
             }
@@ -818,7 +843,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             ok: true,
             filled,
             detail,
-            error: !cred ? "The selected saved login could not be opened." : undefined,
+            reason: !cred ? 'saved_login_unavailable' : undefined,
           });
           break;
         }
@@ -867,6 +892,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           try {
             const binding = await preparePasswordFill(tab.id, tab.url);
+            if (binding.usernameOnly) {
+              const response = await fillUsernameOnly(tab.id, entry.username, binding, 0, tab);
+              return sendResponse({ ...response, refilled: response.filled });
+            }
             const cred = await client.getPasswordForLoginName(tab.id, binding.expectedHref, { username: entry.username });
             if (!cred) return sendResponse({ ok: true, refilled: false });
             pwCacheSet(host, cred);

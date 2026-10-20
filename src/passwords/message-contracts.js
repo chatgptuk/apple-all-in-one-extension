@@ -1,13 +1,13 @@
 /**
  * Shared, runtime-checked boundaries for password messages. These types describe
  * metadata and delivery intent, never authorize a caller or a destination.
- * @typedef {'target_changed'|'no_login_field'|'no_otp_field'|'insecure_page'|'insecure_save'|'unsupported_page'|'locked'|'native_disconnected'|'native_timeout'|'native_busy'|'authorization_cancelled'|'ambiguous_account'|'unavailable'|'invalid_request'} FailureReason
+ * @typedef {'target_changed'|'no_login_field'|'no_otp_field'|'insecure_page'|'insecure_save'|'unsupported_page'|'locked'|'native_disconnected'|'native_timeout'|'native_busy'|'authorization_cancelled'|'ambiguous_account'|'saved_login_unavailable'|'native_query_failed'|'content_unavailable'|'unavailable'|'invalid_request'} FailureReason
  * @typedef {{suggestions:'automatic'|'manual', privateSignup:boolean, allowHttp:boolean}} SitePreferences
  * @typedef {{type:'fillOnPage',loginName:{username:string},mode?:'fill'|'details'} | {type:'fillOtpOnPage',username:string,mode?:'fill'|'details'}} DetailRequest
  * @typedef {{expectedOrigin:string,expectedHref:string,expectedDocumentToken:string,targetToken:string,documentId?:string}} FillBinding
  * @typedef {{ok:boolean,filled?:boolean,reason?:FailureReason,error?:string}} FillResult
  */
-const reasons = new Set(['target_changed', 'no_login_field', 'no_otp_field', 'insecure_page', 'insecure_save', 'unsupported_page', 'locked', 'native_disconnected', 'native_timeout', 'native_busy', 'authorization_cancelled', 'ambiguous_account', 'unavailable', 'invalid_request']);
+const reasons = new Set(['target_changed', 'no_login_field', 'no_otp_field', 'insecure_page', 'insecure_save', 'unsupported_page', 'locked', 'native_disconnected', 'native_timeout', 'native_busy', 'authorization_cancelled', 'ambiguous_account', 'saved_login_unavailable', 'native_query_failed', 'content_unavailable', 'unavailable', 'invalid_request']);
 /** @param {unknown} value @returns {Record<string, unknown>} */
 function record(value) { return value && typeof value === 'object' && !Array.isArray(value) ? /** @type {Record<string, unknown>} */ (value) : {}; }
 /** @param {unknown} value @param {number} [max] */
@@ -51,6 +51,7 @@ export function validContentFillRequest(input) {
   }
   if (m.type === 'prepareFill') return m.purpose === undefined || m.purpose === 'login' || m.purpose === 'otp';
   if (!text(m.expectedDocumentToken, 128) || !m.expectedDocumentToken || !text(m.targetToken, 128) || !m.targetToken) return false;
+  if (m.type === 'fillUsername') return text(m.username) && !!m.username && m.password === undefined;
   if (m.type === 'fill') return text(m.username) && text(m.password, 32768) && !!m.password;
   if (m.type === 'fillOtp') return text(m.code, 128) && !!m.code;
   return false;
@@ -70,6 +71,8 @@ export function failureReason(error) {
   if (/timed? ?out|timeout/i.test(message)) return 'native_timeout';
   if (/cancelled|canceled|denied by user/i.test(message)) return 'authorization_cancelled';
   if (/page changed|document changed|original.*field|origin mismatch/i.test(message)) return 'target_changed';
+  if (/Receiving end does not exist|Could not establish connection|message port closed|message channel closed/i.test(message)) return 'content_unavailable';
+  if (/Generic query error|Invalid query param|Invalid message format|Unknown action|Query error: status/i.test(message)) return 'native_query_failed';
   return 'unavailable';
 }
 /** @param {FailureReason} reason @param {boolean} [chinese] */
@@ -88,6 +91,9 @@ export function failureMessage(reason, chinese = false) {
     authorization_cancelled: ['System authorization was not completed. Retry when you are ready.', '系统授权未完成，准备好后可以重试。'],
     ambiguous_account: ['More than one saved item matches this account. Review its website entries in Apple Passwords before filling.', '此账号匹配到多个不同的保存项目，请先在 Apple 密码中确认网站对应的记录。'],
     invalid_request: ['This page is using an older extension interface. Refresh the page and try again.', '当前页面使用的扩展接口已过期或不受支持，请刷新网页后重试。'],
+    saved_login_unavailable: ['Apple did not return a usable saved login for this account and website. Check the entry in Apple Passwords, then refresh the saved items.', 'Apple 未返回此账号在当前网站的可用登录项。请在 Apple 密码中检查记录，再刷新已保存项目。'],
+    native_query_failed: ['Apple could not complete the saved-login request. Check the entry in Apple Passwords and retry.', 'Apple 未能完成登录项读取。请在 Apple 密码中检查该记录后重试。'],
+    content_unavailable: ['The page did not receive the fill request. Refresh the webpage and select the sign-in field again.', '网页未收到填充请求。请刷新网页，再点击登录输入框重试。'],
     unavailable: ['The operation could not be completed. Retry, or copy diagnostic information from the extension.', '操作未能完成，请重试，或在扩展中复制诊断信息。'],
   };
   return (copy[reason] || copy.unavailable)[chinese ? 1 : 0];

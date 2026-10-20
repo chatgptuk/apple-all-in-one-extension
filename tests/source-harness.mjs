@@ -121,6 +121,9 @@ export function runtimeMessageHandler(path, globals, helpers = []) {
     normalizeNativeTarget,
     deepInputs,
     passwordRole,
+    // Existing fixtures model password/code steps. Identifier-only fixtures supply
+    // the real predicate with their form tree explicitly.
+    isUsernameOnlyTarget: () => false,
     recordDiagnostic: () => {},
     Date,
     scheduleSecretCleanup: () => {},

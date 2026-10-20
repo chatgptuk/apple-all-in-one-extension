@@ -179,7 +179,7 @@
       id: 'qa-extension',
       lastError: undefined,
       onMessage: runtimeMessages,
-      getManifest: () => ({ version: '1.3.10' }),
+      getManifest: () => ({ version: '1.3.11' }),
       getURL: (value) => new URL(value, location.origin).href,
       openOptionsPage: (cb) => respond(undefined, cb),
       sendMessage(message, cb) {
@@ -209,7 +209,19 @@
           pendingSaveCount: 0, recentEvents: [],
         } };
         if (message.type === 'resolveSave') result = { ok: true, saved: false, status: params.get('saveStatus') || 'submitted' };
-        if (message.type === 'inlineLogins') result = { ok: true, locked: false, logins: [] };
+        if (message.type === 'inlineLogins') result = { ok: true, locked: false, logins: params.get('usernameFirst') === '1' ? [{ username: 'synthetic@example.test' }] : [] };
+        if (message.type === 'inlineFill' && params.get('usernameFirst') === '1') {
+          // Built content script with synthetic transport; the real background
+          // decision is exercised by username-first-fill.test.mjs.
+          let lease;
+          runtimeMessages.emit({ type: 'prepareFill', purpose: 'login', expectedOrigin: location.origin },
+            { id: 'qa-extension' }, (response) => { lease = response; });
+          result = { ok: false, filled: false, reason: 'no_login_field' };
+          if (lease?.usernameOnly) runtimeMessages.emit({
+            type: 'fillUsername', username: message.loginName.username, expectedOrigin: location.origin,
+            expectedHref: lease.href, expectedDocumentToken: lease.documentToken, targetToken: lease.targetToken,
+          }, { id: 'qa-extension' }, (response) => { result = response; });
+        }
         if (message.type === 'hme:inline-state') result = { ok: true, ready: true };
         if (message.type === 'hme:create-for-site') result = { ok: true, hme: 'synthetic@icloud.com' };
         if (message.type === 'getLogins')
@@ -242,6 +254,10 @@
               website: 'example.test',
             },
           };
+        }
+        if (message.type === 'fillOnPage' && params.get('usernameFirst') === '1' && message.mode !== 'details') {
+          secretReads--;
+          result = { ok: true, filled: true, usernameOnly: true };
         }
         if (message.type === 'fillOtpOnPage') {
           if (message.mode !== 'details') fills++;

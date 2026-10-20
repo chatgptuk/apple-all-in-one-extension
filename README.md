@@ -11,7 +11,7 @@ An independent, open-source Chromium extension that brings Apple Passwords, pass
 
 This project is not endorsed by, sponsored by, authorized by, or affiliated with Apple Inc. Apple, iCloud, iCloud+, Apple Passwords, and related names are Apple trademarks used here only to describe compatibility and the services being accessed.
 
-**Current version:** 1.3.10<br>
+**Current version:** 1.3.11<br>
 **Repository:** https://github.com/chatgptuk/apple-all-in-one-extension
 
 ## Who this project is for
@@ -44,7 +44,9 @@ A slow account/code-list query no longer immediately discards the unlocked sessi
 - Shows saved verification-code entries and fills codes with origin/frame checks.
 - Keeps decrypted secrets in extension memory only and clears them when the native session ends.
 
-Clicking a saved login fills the current page and expands its details in the popup. The password remains masked until explicitly revealed. If the account has a verification code, **Show Code** is a separate action because macOS can require a separate Touch ID authorization for that native read. Clicking a standalone verification-code entry fills the page and expands the code details from the same authorized read, without requesting Touch ID twice for that action.
+On identifier-first sign-in pages, selecting a saved login fills only the username, without reading a password or triggering Touch ID for a password read. Fill the password on the next step, or choose **View Details Only** to read it explicitly.
+
+On pages with a password field, clicking a saved login fills the current page and expands its details in the popup. The password remains masked until explicitly revealed. If the account has a verification code, **Show Code** is a separate action because macOS can require a separate Touch ID authorization for that native read. Clicking a standalone verification-code entry fills the page and expands the code details from the same authorized read, without requesting Touch ID twice for that action.
 
 **Details Only** opens either type of entry without changing the page; **Fill Again** remains available in details. Same-account, same-host password reads can reuse a memory-only cache for up to two idle minutes, with a five-minute maximum lifetime. Multiple different secrets for an indistinguishable account are not silently reduced to the first result.
 
