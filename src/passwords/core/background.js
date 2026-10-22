@@ -40,7 +40,7 @@ function broadcast(msg) {
 // most-recently-used login per host (in-memory), so the dropdown floats your usual account up
 const mruByHost = new Map(); // host -> [exact username, most recent first]
 function recordMru(host, username) {
-  if (!host || !username) return;
+  if (!host || typeof username !== 'string') return;
   const u = accountKey(username);
   const arr = (mruByHost.get(host) || []).filter((x) => x !== u);
   arr.unshift(u);

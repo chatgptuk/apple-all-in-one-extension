@@ -60,7 +60,7 @@ export function createPasswordCache({
     },
 
     set(host, credential) {
-      if (!host || !credential?.username) return;
+      if (!host || typeof credential?.username !== 'string' || typeof credential.password !== 'string' || !credential.password) return;
       prune();
       const currentTime = now();
       const key = keyFor(host, credential.username);

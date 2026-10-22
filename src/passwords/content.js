@@ -31,7 +31,7 @@ try {
 } catch (_) {}
 
 const OTP_AUTOCOMPLETE = /one-time-code/i;
-const OTP_HINT = /\b(otp|one[\s-]?time(?:[\s-]?(?:password|passcode|code))?|verification(?:[\s-]?code)?|2fa|mfa|two[\s-]?factor(?:[\s-]?authentication)?(?:[\s-]?code)?|auth(?:entication)?[\s-]?code|authenticator(?:[\s-]?app)?(?:[\s-]?code)?|sms[\s-]?code|security[\s-]?code|passcode|token(?:[\s-]?code)?)\b/i;
+const OTP_HINT = /\b(otp|one[\s-]?time(?:[\s-]?(?:password|passcode|code))?|verification(?:[\s-]?code)?|2fa|mfa|two[\s-]?factor(?:[\s-]?authentication)?(?:[\s-]?code)?|auth(?:entication)?[\s-]?code|authenticator(?:[\s-]?app)?(?:[\s-]?code)?|sms[\s-]?code|security[\s-]?code)\b/i;
 // Authenticator wording only: a bare 验证码 is just as often an image captcha or SMS code.
 const OTP_HINT_CJK = /动态码|動態碼|动态口令|動態口令|动态密码|動態密碼|两步验证|兩步驗證|二次验证|二次驗證|双重验证|雙重驗證|身份验证器|身份驗證器|谷歌验证|谷歌驗證|一次性密码|一次性密碼/;
 const USERNAME_HINT = /\b(user|login|signin|sign[\s-]?in|loginid|account|identifier)\b|账号|帳號|賬號|账户|帳戶|用户名|用戶名|登录名|登錄名|登入名|手机号|手機號|邮箱|郵箱|电子邮件|電子郵件/i;
@@ -262,10 +262,15 @@ function isOtpField(el) {
   if (!(el instanceof HTMLInputElement)) return false;
   const ac = el.getAttribute('autocomplete') || '';
   if (OTP_AUTOCOMPLETE.test(ac)) return true;
+  // A permanent admin/API token can be a saved password with no username.
+  // Honor explicit password semantics before guessing from names or labels.
+  if (/(?:^|\s)(?:current-password|new-password)(?:\s|$)/i.test(ac)) return false;
 
   const blob = attrBlob(el);
   if (OTP_HINT.test(blob) || OTP_HINT_CJK.test(blob)) return true;
 
+  // Bare "token"/"passcode" also describe permanent credentials. Without an
+  // explicit OTP hint, require a bounded numeric-code shape.
   // A large number of government/bank 2FA pages omit autocomplete=one-time-code.
   // Recognize the common 4–8 digit numeric-code shape without treating arbitrary
   // numeric inputs (postal codes, quantities, phone numbers) as OTP fields.
@@ -278,7 +283,7 @@ function isOtpField(el) {
     el.inputMode === 'decimal' ||
     type === 'tel' ||
     /\\d|0-9|\[0-9\]/i.test(pattern);
-  const codeish = /\b(code|authenticator|verification|verify|token|two[\s-]?factor|2fa|mfa)\b/i.test(blob);
+  const codeish = /\b(code|authenticator|verification|verify|token|passcode|two[\s-]?factor|2fa|mfa)\b/i.test(blob);
 
   if (numericish && max === 1) return true; // split OTP boxes
   if (numericish && max >= 4 && max <= 8 && codeish) return true;

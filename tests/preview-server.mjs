@@ -10,6 +10,14 @@ const mocks = readFileSync(
 );
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
+  if (url.pathname === '/password-only-preview.html') {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Password-only login QA</title><script>${mocks}</script><style>body{font:16px system-ui;max-width:620px;margin:60px auto;padding:20px}label,input,output{display:block}input,button{font:inherit;padding:14px;border-radius:10px;margin:12px 0;box-sizing:border-box}input{width:100%;border:1px solid #aaa}button{border:0;background:#111;color:white}output{padding:16px;background:#eef7ef}small{color:#555}</style></head><body><h1>Admin · password-only login</h1><small>Local QA · production chooser and fill · synthetic account with no username</small><form><label>Admin token<input type="password" name="token" autocomplete="current-password"></label><button type="button">Sign in</button></form><output id="qa-result" role="status">Click Admin token to open saved passwords.</output><script>
+      document.addEventListener('input',event=>{if(event.target.name==='token')document.querySelector('#qa-result').textContent=event.target.value==='SyntheticAdminToken!'?'Password filled successfully · no username required':'Not filled yet';});
+      const fill=document.createElement('button');fill.type='button';fill.textContent='Test password delivery (synthetic transport)';fill.onclick=()=>chrome.runtime.sendMessage({type:'inlineFill',loginName:{username:''}});document.body.append(fill);
+    </script><script src="/passwordsContent.bundle.js"></script></body></html>`);
+    return;
+  }
   if (url.pathname === '/username-first-preview.html') {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Identifier-first fill QA</title><script>${mocks}</script><style>body{font:16px system-ui;max-width:620px;margin:60px auto;padding:20px}input,button{font:inherit;padding:14px;border-radius:10px;margin:12px 0;box-sizing:border-box}input{width:100%;border:1px solid #aaa}button{border:0;background:#111;color:white}output{display:block;padding:16px;background:#eef7ef}small{color:#555}</style></head><body><h1>Phone number or email</h1><small>Local QA · production content script · synthetic account and transport</small><label><input id="PHONE_NUMBER_or_EMAIL_ADDRESS" type="email" name="email" autocomplete="email webauthn" inputmode="email" placeholder="Enter phone number or email"></label><button id="qa-fill" type="button">Fill synthetic saved account</button><output id="qa-result" role="status">Not filled yet</output><script>

@@ -11,6 +11,7 @@ The focused suite executes real production functions/modules against synthetic D
 - HTTP content scripts without `crypto.randomUUID`: cryptographic fallback tokens and fresh fill leases.
 - Exact account identity for password caching and verification-code selection.
 - Identifier-first forms (including Uber-style `email webauthn` inputs): metadata-only username fill, explicit password details, no secret payload, and unchanged document/field/account guards.
+- Password-only forms with an empty saved username: `current-password` overrides generic token/code hints, native selection retains the empty account, cached credentials still expire, and ambiguous unnamed secrets are rejected.
 - Active idle/hard expiry and bounded LRU credential retention; memory-only pending-save expiry, safe retries and metadata-only notifications.
 - Install/update-only migration recovery with bounded tab/frame injection, rather than all-tab work at every service-worker wake.
 - Native timeouts, late replies, disconnect cleanup and optional save acknowledgments.
@@ -26,6 +27,7 @@ For visual QA, run `node tests/preview-server.mjs`, then open these URLs in the 
 - Add `?navigation=1&many=1` to the popup preview to persist only synthetic navigation/list presentation across reloads. Open an address, reload, and verify the same detail returns without password reads or candidate creation; toolbar and `?manager=1` destinations are separate. Clear the `apple-all-in-one:synthetic-navigation:v1` localStorage key to reset this opt-in preview state.
 - `http://127.0.0.1:4179/inline-preview.html`: real inline chooser. Simulates failed signup requests and permits testing length/symbol controls and retries.
 - `http://127.0.0.1:4179/username-first-preview.html?usernameFirst=1`: built content script on an identifier-only form with synthetic transport. Use its fill button and verify the account field and success message. Add `?usernameFirst=1` to the popup preview to verify the successful username notice and explicit password-details action; the actual background decision is tested in `username-first-fill.test.mjs`.
+- `http://127.0.0.1:4179/password-only-preview.html?passwordOnly=1&lang=zh-CN`: matches the toolgrep admin field attributes, using the production chooser/content script with synthetic transport. Click Admin token, select `(无用户名)`, and verify the success status. No real token or native authorization is used.
 - `http://127.0.0.1:4179/form-preview.html`: real production content script on a change-password form, with current/new/confirmation/unrelated fields and browser-native HTML pattern validation.
 - Add `?httpCrypto=1` to the form preview to remove `randomUUID` and reproduce a non-secure page's Crypto API surface (loopback itself is considered trustworthy by browsers).
 - `http://127.0.0.1:4179/options.html` and `/userguide.html`: settings and setup pages with the same synthetic account.

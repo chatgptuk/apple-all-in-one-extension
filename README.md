@@ -11,7 +11,7 @@ An independent, open-source Chromium extension that brings Apple Passwords, pass
 
 This project is not endorsed by, sponsored by, authorized by, or affiliated with Apple Inc. Apple, iCloud, iCloud+, Apple Passwords, and related names are Apple trademarks used here only to describe compatibility and the services being accessed.
 
-**Current version:** 1.3.11<br>
+**Current version:** 1.3.12<br>
 **Repository:** https://github.com/chatgptuk/apple-all-in-one-extension
 
 ## Who this project is for
@@ -43,6 +43,8 @@ A slow account/code-list query no longer immediately discards the unlocked sessi
 - Supports passkey bridging and optional suppression of silent conditional-passkey suggestions.
 - Shows saved verification-code entries and fills codes with origin/frame checks.
 - Keeps decrypted secrets in extension memory only and clears them when the native session ends.
+
+Password-only saved logins with no username are supported. Explicit `current-password` / `new-password` fields take priority over token/code hints; a bare `token` or `passcode` name does not by itself identify a one-time code.
 
 On identifier-first sign-in pages, selecting a saved login fills only the username, without reading a password or triggering Touch ID for a password read. Fill the password on the next step, or choose **View Details Only** to read it explicitly.
 

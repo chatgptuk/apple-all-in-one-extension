@@ -179,7 +179,7 @@
       id: 'qa-extension',
       lastError: undefined,
       onMessage: runtimeMessages,
-      getManifest: () => ({ version: '1.3.11' }),
+      getManifest: () => ({ version: '1.3.12' }),
       getURL: (value) => new URL(value, location.origin).href,
       openOptionsPage: (cb) => respond(undefined, cb),
       sendMessage(message, cb) {
@@ -210,6 +210,18 @@
         } };
         if (message.type === 'resolveSave') result = { ok: true, saved: false, status: params.get('saveStatus') || 'submitted' };
         if (message.type === 'inlineLogins') result = { ok: true, locked: false, logins: params.get('usernameFirst') === '1' ? [{ username: 'synthetic@example.test' }] : [] };
+        if (message.type === 'inlineLogins' && params.get('passwordOnly') === '1') result = { ok: true, locked: false, logins: [{ username: '' }] };
+        if (message.type === 'inlineFill' && params.get('passwordOnly') === '1') {
+          secretReads++;
+          let lease;
+          runtimeMessages.emit({ type: 'prepareFill', purpose: 'login', expectedOrigin: location.origin },
+            { id: 'qa-extension' }, (response) => { lease = response; });
+          result = { ok: false, filled: false, reason: 'no_login_field' };
+          if (lease?.ok && !lease.usernameOnly && message.loginName.username === '') runtimeMessages.emit({
+            type: 'fill', username: '', password: 'SyntheticAdminToken!', expectedOrigin: location.origin,
+            expectedHref: lease.href, expectedDocumentToken: lease.documentToken, targetToken: lease.targetToken,
+          }, { id: 'qa-extension' }, (response) => { result = response; });
+        }
         if (message.type === 'inlineFill' && params.get('usernameFirst') === '1') {
           // Built content script with synthetic transport; the real background
           // decision is exercised by username-first-fill.test.mjs.
