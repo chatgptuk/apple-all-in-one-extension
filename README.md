@@ -11,7 +11,7 @@ An independent, open-source Chromium extension that brings Apple Passwords, pass
 
 This project is not endorsed by, sponsored by, authorized by, or affiliated with Apple Inc. Apple, iCloud, iCloud+, Apple Passwords, and related names are Apple trademarks used here only to describe compatibility and the services being accessed.
 
-**Current version:** 1.3.12<br>
+**Current version:** 1.3.13<br>
 **Repository:** https://github.com/chatgptuk/apple-all-in-one-extension
 
 ## Who this project is for
@@ -29,6 +29,8 @@ It is not currently suitable for Chrome Web Store submission, managed enterprise
 ## Features
 
 ### Apple Passwords
+
+If an earlier request still appears busy after you cancel or dismiss authorization, the popup now checks its status and refreshes the saved-item list when the request ends. **End Wait and Reconnect** abandons the old connection and starts a fresh unlock; it never replays the previous fill. Password/code reads still time out after 60 seconds. The busy message describes a pending response rather than claiming a system authorization window is open.
 
 If the native helper disconnects temporarily, reopen the popup to reconnect. The unavailable-helper screen also offers **Retry Connection**, without reloading the extension. macOS may still require unlocking the new session.
 

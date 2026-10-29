@@ -538,7 +538,7 @@ const fillFailureGuidance = (reason?: string) => {
     case 'unsupported_page': return tr('Open an HTTP or HTTPS website to query Apple Passwords. Your session has not been reset.', '请打开 HTTP 或 HTTPS 网站后查询 Apple 密码，现有会话不会被重置。');
     case 'native_disconnected': return tr('The Apple Passwords helper exited unexpectedly and its session was lost. Reconnect and unlock again; copy diagnostics if this recurs.', 'Apple 密码辅助程序意外退出，原会话已丢失。请重新连接并解锁；如反复出现，请复制诊断报告。');
     case 'native_timeout': return tr('Apple is taking longer to respond. Check the system prompt and retry shortly; a slow list query does not immediately end your session.', 'Apple 响应较慢，请检查系统提示并稍后重试；列表查询暂时超时不会立即结束已解锁会话。');
-    case 'native_busy': return tr('Another Apple authorization is in progress. Finish it before retrying.', '另一项 Apple 授权正在进行，请处理完成后重试。');
+    case 'native_busy': return tr('Still waiting for Apple Passwords to finish an earlier request. If you already cancelled or dismissed it, you can end the wait below.', '仍在等待 Apple 密码结束上一次请求。如果已经取消或忽略授权，可以在下方结束等待。');
     case 'authorization_cancelled': return tr('System authorization was not completed. You can retry when ready.', '系统授权未完成。准备好后可以重新尝试。');
     case 'ambiguous_account': return tr('Apple returned multiple matching accounts. Open Apple Passwords to select the exact entry.', 'Apple 返回了多个同名匹配账号。请在 Apple 密码中选择准确的条目。');
     case 'saved_login_unavailable': return tr('Apple did not return a usable saved login. Check the account and website in Apple Passwords, then refresh saved items.', 'Apple 未返回可用登录项。请在 Apple 密码中检查账号和网站，再刷新已保存项目。');
@@ -629,6 +629,7 @@ const PasswordsView = () => {
   const [otpItemsLoading, setOtpItemsLoading] = useState(false);
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string>();
+  const [waitingForNative, setWaitingForNative] = useState(false);
   const [busy, setBusy] = useState<string>();
   const [expandedLoginKey, setExpandedLoginKey] = useState<string>();
   const [loginDetail, setLoginDetail] = useState<PasswordDetail>();
@@ -643,6 +644,7 @@ const PasswordsView = () => {
   const [copiedDetail, setCopiedDetail] = useState<'username' | 'password' | 'otp'>();
   const [otpNow, setOtpNow] = useState(Date.now());
   const pinVerifyInFlight = useRef(false);
+  const viewMounted = useRef(true);
   const siteLoadSequence = useRef(0);
   const siteLoadPending = useRef<Promise<void> | null>(null);
   const detailLoadSequence = useRef(0);
@@ -683,6 +685,7 @@ const PasswordsView = () => {
     setSiteItemsLoading(true);
     setOtpItemsLoading(false);
     setError(undefined);
+    setWaitingForNative(false);
 
     let loginSucceeded = false;
     try {
@@ -700,6 +703,7 @@ const PasswordsView = () => {
         loginSucceeded = true;
         setLogins(loginResult.logins || []);
       } else {
+        setWaitingForNative(loginResult?.reason === 'native_busy' || loginResult?.reason === 'native_timeout');
         setError(loginResult?.reason ? fillFailureGuidance(loginResult.reason) : loginResult?.error || tr(
           'Could not query Apple Passwords. Your saved items were not reported as empty.',
           '无法查询 Apple 密码；扩展不会再把查询失败显示成“没有已保存项目”。'
@@ -715,7 +719,7 @@ const PasswordsView = () => {
     if (sequence !== siteLoadSequence.current) return;
     setOtpItemsLoading(true);
     try {
-      const otpResult = await sendPasswordMessage<{ ok?: boolean; items?: OtpItem[]; error?: string }>(
+      const otpResult = await sendPasswordMessage<{ ok?: boolean; items?: OtpItem[]; error?: string; reason?: string }>(
         { type: 'getOtpItems' },
         10_000,
       );
@@ -728,6 +732,7 @@ const PasswordsView = () => {
       if (otpResult?.ok) {
         setOtps(otpResult.items || []);
       } else if (loginSucceeded) {
+        setWaitingForNative(otpResult?.reason === 'native_busy' || otpResult?.reason === 'native_timeout');
         setError(otpResult?.error || tr(
           'Could not query verification codes.',
           '无法查询验证码。'
@@ -766,6 +771,7 @@ const PasswordsView = () => {
       type: 'requestChallenge',
       ifNeeded: !fresh,
     });
+    if (!viewMounted.current) return false;
     setBusy(undefined);
     if (res?.ok) {
       setState(res.state || 'needs_pin');
@@ -782,6 +788,7 @@ const PasswordsView = () => {
     setBusy('connect');
     setError(undefined);
     const connected = await sendPasswordMessage<{ ok?: boolean; state?: PasswordState; error?: string }>({ type: 'connect' });
+    if (!viewMounted.current) return;
     setBusy(undefined);
     if (!connected?.ok) {
       setError(connected?.error || tr('Could not connect to Apple Passwords.', '无法连接 Apple 密码。'));
@@ -794,8 +801,60 @@ const PasswordsView = () => {
     else await refreshState();
   };
 
+  const endNativeWait = async () => {
+    setWaitingForNative(false);
+    siteLoadSequence.current += 1;
+    siteLoadPending.current = null;
+    clearLoginDetail();
+    setBusy('reset');
+    const result = await sendPasswordMessage<{ ok?: boolean; state?: PasswordState }>({ type: 'resetConnection' }, 5000);
+    if (!viewMounted.current) return;
+    setBusy(undefined);
+    if (!result?.ok) {
+      setError(tr('Could not end the wait. Please retry.', '无法结束等待，请重试。'));
+      setWaitingForNative(true);
+      return;
+    }
+    setState(result.state || 'disconnected');
+    setLogins([]);
+    setOtps([]);
+    setError(undefined);
+    await beginUnlock();
+  };
+
+  useEffect(() => {
+    if (!waitingForNative || state !== 'unlocked') return;
+    let cancelled = false;
+    let timer: number;
+    const check = async () => {
+      // Pure status polling: never replay a password/code read or launch Touch ID.
+      const current = await sendPasswordMessage<{ state?: PasswordState; hasChallenge?: boolean; nativePending?: boolean }>({ type: 'getState' }, 5000);
+      if (cancelled) return;
+      if (current?.state && current.state !== 'unlocked') {
+        setWaitingForNative(false);
+        setError(undefined);
+        setState(current.state);
+        setHasChallenge(!!current.hasChallenge);
+        return;
+      }
+      if (current?.state === 'unlocked' && current.nativePending === false) {
+        setWaitingForNative(false);
+        await loadSiteItems();
+        // A different UI may have taken the native queue in the meantime. If
+        // React batches false -> true, keep the current polling effect alive.
+        if (!cancelled) timer = window.setTimeout(check, 1000);
+        return;
+      }
+      timer = window.setTimeout(check, 1000);
+    };
+    timer = window.setTimeout(check, 1000);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waitingForNative, state]);
+
   useEffect(() => {
     let cancelled = false;
+    viewMounted.current = true;
     // Opening the toolbar is itself an explicit user gesture. Restore the convenient behavior
     // from v1.2.4: connect to Apple Passwords and request a challenge automatically on the
     // first popup open, while keeping background getState() a pure read.
@@ -854,6 +913,8 @@ const PasswordsView = () => {
         if (msg.state !== 'needs_pin') setHasChallenge(false);
         if (msg.state === 'unlocked') loadSiteItems().catch(console.debug);
         else {
+          setWaitingForNative(false);
+          if (!msg.reason) setError(undefined);
           siteLoadSequence.current += 1;
           siteLoadPending.current = null;
           setSiteItemsLoading(false);
@@ -868,6 +929,7 @@ const PasswordsView = () => {
     browser.runtime.onMessage.addListener(listener);
     return () => {
       cancelled = true;
+      viewMounted.current = false;
       siteLoadSequence.current += 1;
       detailLoadSequence.current += 1;
       siteLoadPending.current = null;
@@ -956,6 +1018,7 @@ const PasswordsView = () => {
       return;
     }
     if (!res?.ok || !res.detail) {
+      setWaitingForNative(res?.reason === 'native_busy' || res?.reason === 'native_timeout');
       setError(fillFailureGuidance(res?.reason));
       return;
     }
@@ -994,6 +1057,7 @@ const PasswordsView = () => {
     if (sequence !== detailLoadSequence.current) return;
     setBusy(undefined);
     if (!res?.ok || !res.detail) {
+      setWaitingForNative(res?.reason === 'native_busy' || res?.reason === 'native_timeout');
       setError(fillFailureGuidance(res?.reason));
       return;
     }
@@ -1249,6 +1313,7 @@ const PasswordsView = () => {
       {(siteItemsLoading || otpItemsLoading) && !error && !logins.length && !otps.length && <div className="hme-loading-state"><Spinner /> <span>{tr('Checking Apple Passwords…', '正在查询 Apple 密码…')}</span></div>}
       {!siteItemsLoading && !otpItemsLoading && !error && !logins.length && !otps.length && <section className="hme-group unified-empty-group"><span className="hme-symbol-tile is-purple"><Symbol name="key" size={18} /></span><div><strong>{tr('No saved items for this website', '此网站没有已保存项目')}</strong><span>{tr('Click a sign-in field to use the secure inline chooser.', '点击登录输入框即可使用安全的内联选择器。')}</span></div></section>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
+      {waitingForNative && <button type="button" className="hme-secondary-action" disabled={!!busy} onClick={() => void endNativeWait()}>{tr('End Wait and Reconnect', '结束等待并重新连接')}</button>}
     </div>
   );
 };

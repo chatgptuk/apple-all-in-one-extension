@@ -15,6 +15,7 @@ The focused suite executes real production functions/modules against synthetic D
 - Active idle/hard expiry and bounded LRU credential retention; memory-only pending-save expiry, safe retries and metadata-only notifications.
 - Install/update-only migration recovery with bounded tab/frame injection, rather than all-tab work at every service-worker wake.
 - Native timeouts, late replies, disconnect cleanup and optional save acknowledgments.
+- Cancelled/ignored native requests: busy-state recovery, popup-only reset, stale-reply isolation, queued-work invalidation and no delayed authorization after closing the popup.
 - Closing a signup chooser during address creation and restoring controls after failures.
 - Open-ended and concatenated password patterns, multiple required symbols, explicit allowlists, negated hints and manual settings.
 - Offline, 401/403 and 429 behavior through the actual background message handlers.
@@ -31,6 +32,7 @@ For visual QA, run `node tests/preview-server.mjs`, then open these URLs in the 
 - `http://127.0.0.1:4179/form-preview.html`: real production content script on a change-password form, with current/new/confirmation/unrelated fields and browser-native HTML pattern validation.
 - Add `?httpCrypto=1` to the form preview to remove `randomUUID` and reproduce a non-secure page's Crypto API surface (loopback itself is considered trustworthy by browsers).
 - `http://127.0.0.1:4179/options.html` and `/userguide.html`: settings and setup pages with the same synthetic account.
+- Add `?nativeBusy=1&lang=zh-CN` to the popup preview: finish the synthetic request to verify automatic list recovery, or use **End Wait and Reconnect** to verify the fresh unlock flow. Neither action reads a real secret.
 - Add `?appearance=light` or `?appearance=dark&lang=zh-CN` to popup/settings previews to inspect both appearances and languages. Production pages follow the system appearance; these query overrides exist only in the preview fixture.
 - `http://127.0.0.1:4179/icons-preview.html`: the shared original vector catalog at 18 and 32 points. Main UI and isolated inline UI must use the same paths; site favicons remain unchanged.
 

@@ -202,6 +202,31 @@ test('state reads and unprivileged connect messages cannot start native recovery
   assert.equal((await h.request('connect')).state, State.NeedsPin);
 });
 
+test('only the password popup can reset a pending connection, without replay or automatic unlock', async (t) => {
+  const h = nativeHarness(t);
+  await h.request('connect');
+  h.client.session.sharedKey = new Uint8Array(32);
+  h.client._setState(State.Unlocked);
+  const port = h.client.port;
+  const pending = assert.rejects(h.client._send(Command.GET_PASSWORD_FOR_LOGIN_NAME, {}, 60_000), /connection closed/);
+  assert.equal((await h.request('getState')).nativePending, true);
+  for (const sender of [
+    { id: h.chrome.runtime.id, url: 'https://example.test', tab: { id: 1 }, frameId: 0 },
+    { id: h.chrome.runtime.id, url: h.chrome.runtime.getURL('popup.html?manager=1') },
+    { id: 'unrelated-extension' },
+  ]) assert.equal((await h.request('resetConnection', sender)).ok, false);
+  assert.equal(port.closed, false);
+  const result = await h.request('resetConnection');
+  await pending;
+  assert.equal(result.ok, true);
+  assert.equal(result.state, State.Disconnected);
+  assert.equal(port.closed, true);
+  assert.equal(h.client.session, undefined);
+  assert.equal((await h.request('getState')).nativePending, false);
+  assert.equal(h.connections(), 1);
+  assert.equal(port.sent.filter((m) => m.cmd === Command.GET_PASSWORD_FOR_LOGIN_NAME).length, 1);
+});
+
 test('the actual diagnostic response includes sanitized native lifecycle events', async (t) => {
   const h = nativeHarness(t);
   await h.request('connect');

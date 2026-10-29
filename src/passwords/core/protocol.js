@@ -28,7 +28,7 @@ const INTERACTIVE_SECRET_TIMEOUT_MS = 60_000;
 // Metadata can be slow after wake or while Apple's UI is busy. Stop the caller's
 // spinner after 5s, but allow 25s to drain that exact reply before ending SRP.
 const METADATA_DRAIN_MS = 25_000;
-const NATIVE_EVENT_REASONS = new Set(['connected', 'unlocked', 'invalid_target_blocked', 'challenge_requested', 'verification_failed', 'metadata_slow', 'metadata_drained', 'response_timeout', 'helper_exited', 'host_unavailable', 'transport_error', 'connection_closed', 'passwords_disabled', 'relogin_required', 'session_expired', 'incompatible_helper']);
+const NATIVE_EVENT_REASONS = new Set(['connected', 'unlocked', 'invalid_target_blocked', 'challenge_requested', 'verification_failed', 'metadata_slow', 'metadata_drained', 'response_timeout', 'helper_exited', 'host_unavailable', 'transport_error', 'connection_closed', 'request_cancelled', 'passwords_disabled', 'relogin_required', 'session_expired', 'incompatible_helper']);
 // how long we still trust a code the Mac put on screen. past this we re-prompt rather than
 // verify against a challenge the user has probably lost track of
 const CHALLENGE_TTL_MS = 3 * 60_000;
@@ -118,9 +118,12 @@ export class ApplePasswords {
     // native protocol echoes the same cmd on replies with no correlation id, so two
     // in-flight requests with the same cmd collide. serialize all exchanges here
     this._lock = Promise.resolve();
+    this._connectionGeneration = 0;
+    this._activeOperation = undefined;
   }
 
   _withLock(fn, { queueTimeoutMs = null } = {}) {
+    const generation = this._connectionGeneration;
     let expired = false;
     let timer = null;
     const queueTimeout =
@@ -132,12 +135,21 @@ export class ApplePasswords {
               reject(new Error("Apple Passwords is busy; retry the lookup"));
             }, queueTimeoutMs);
           });
-    const invoke = () => {
+    const invoke = async () => {
       if (timer) clearTimeout(timer);
       // A metadata lookup that already timed out in the queue is stale. Skip it
       // when the preceding Touch ID/password read eventually releases the lock.
       if (expired) return undefined;
-      return fn();
+      if (generation !== this._connectionGeneration) throw new Error('session changed');
+      const operation = {};
+      this._activeOperation = operation;
+      try {
+        const result = await fn();
+        if (generation !== this._connectionGeneration) throw new Error('session changed');
+        return result;
+      } finally {
+        if (this._activeOperation === operation) this._activeOperation = undefined;
+      }
     };
     const run = this._lock.then(invoke, invoke);
     // keep chain alive even if fn rejects, so the next caller still runs
@@ -162,7 +174,13 @@ export class ApplePasswords {
   }
 
   getDiagnostics() {
-    return { startedAt: this._startedAt, events: this._diagnosticEvents.map((event) => ({ ...event })) };
+    return { startedAt: this._startedAt, pending: this.pending, events: this._diagnosticEvents.map((event) => ({ ...event })) };
+  }
+
+  // Waiting for a native reply is not proof that an authorization sheet is open.
+  // Include the metadata drain and async crypto work, not only the queue lock.
+  get pending() {
+    return !!this._activeOperation || this._waiters.size > 0;
   }
 
   _setState(s, reason) {
@@ -245,6 +263,11 @@ export class ApplePasswords {
     this.capabilities = undefined;
     this._challengeAt = 0;
     this._challengeGen++;
+    this._connectionGeneration++;
+    this._activeOperation = undefined;
+    this._lock = Promise.resolve();
+    this._connecting = undefined;
+    this._challengePending = undefined;
     this._rejectWaiters(error);
     this._setState(state, reason);
     try { port?.disconnect(); } catch (_) {}
@@ -522,7 +545,9 @@ export class ApplePasswords {
     const { hostname } = normalizeNativeTarget(tabId, url);
     if (!this.ready) throw new Error("not unlocked");
     return this._withLock(async () => {
+      const session = this.session;
       for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (this.session !== session) throw new Error('session changed');
         const res = await this._encryptedQuery(
           Command.GET_LOGIN_NAMES_FOR_URL,
           tabId,
@@ -640,8 +665,9 @@ export class ApplePasswords {
     if (!password) throw new Error("no password to save");
     return this._withLock(async () => {
       this._assertCanSend(Command.SET_PASSWORD_FOR_LOGIN_NAME_URL);
-      const sdata = this.session.serialize(
-        await this.session.encrypt({
+      const session = this.session;
+      const sdata = session.serialize(
+        await session.encrypt({
           ACT: Action.MAYBE_ADD,
           URL: "",
           USR: "",
@@ -651,12 +677,13 @@ export class ApplePasswords {
           NPWD: password,
         }),
       );
+      if (this.session !== session) throw new Error('session changed');
       const body = {
         tabId,
         frameId: 0,
         payload: {
           QID: "CmdNewAccount4URL",
-          SMSG: JSON.stringify({ TID: this.session.username, SDATA: sdata }),
+          SMSG: JSON.stringify({ TID: session.username, SDATA: sdata }),
         },
       };
       // Save is fire-and-forget: some helper versions never acknowledge it.
@@ -669,10 +696,10 @@ export class ApplePasswords {
     });
   }
 
-  disconnect() {
+  disconnect(reason = 'connection_closed') {
     try {
       this.port?.postMessage({ cmd: Command.END });
     } catch (_) {}
-    this._retireConnection();
+    this._retireConnection(new Error('connection closed'), State.Disconnected, reason);
   }
 }

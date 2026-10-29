@@ -718,7 +718,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         case "getState":
           // Pure state read; the popup explicitly sends connect when opened.
-          sendResponse({ ok: true, state: client.state, hasChallenge: client.hasChallenge });
+          sendResponse({ ok: true, state: client.state, hasChallenge: client.hasChallenge, nativePending: client.pending });
+          break;
+
+        case "resetConnection":
+          // Popup-only: retire the port rather than reusing an abandoned reply.
+          // This action never replays a fill or reconnects without a new gesture.
+          client.disconnect('request_cancelled');
+          sendResponse({ ok: true, state: client.state, hasChallenge: false });
           break;
 
         case "connect":

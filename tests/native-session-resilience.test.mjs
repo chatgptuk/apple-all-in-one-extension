@@ -18,6 +18,62 @@ function unlockedClient(t) {
   return { client, port };
 }
 
+test('a cancelled native read releases the queue and pending status as soon as its reply arrives', async (t) => {
+  const { client, port } = unlockedClient(t);
+  const request = client._withLock(() => client._send(Command.GET_PASSWORD_FOR_LOGIN_NAME, {}, 60_000));
+  await Promise.resolve();
+  assert.equal(client.pending, true);
+  client._dispatch({ cmd: Command.GET_PASSWORD_FOR_LOGIN_NAME, payload: 'synthetic-cancel-reply' }, port);
+  await request;
+  assert.equal(client.pending, false);
+  assert.equal(client.ready, true);
+  const fresh = client._send(Command.GET_LOGIN_NAMES_FOR_URL);
+  client._dispatch({ cmd: Command.GET_LOGIN_NAMES_FOR_URL }, port);
+  await fresh;
+  assert.equal(client.pending, false);
+});
+
+test('ending an ignored request retires its port and cancels queued work across reconnect', async (t) => {
+  const { client, port } = unlockedClient(t);
+  const old = assert.rejects(client._withLock(() => client._send(Command.GET_PASSWORD_FOR_LOGIN_NAME, {}, 60_000)), /connection closed/);
+  await Promise.resolve();
+  let called = false;
+  const queued = assert.rejects(client._withLock(() => { called = true; }), /session changed/);
+  client.disconnect('request_cancelled');
+  assert.equal(client.pending, false);
+  assert.equal(client.getDiagnostics().events.at(-1).reason, 'request_cancelled');
+  const replacement = { postMessage() {}, disconnect() {} };
+  client.port = replacement;
+  const fresh = client._withLock(() => client._send(Command.GET_PASSWORD_FOR_LOGIN_NAME));
+  await Promise.resolve();
+  client._dispatch({ cmd: Command.GET_PASSWORD_FOR_LOGIN_NAME, payload: 'old-secret' }, port);
+  await old;
+  await queued;
+  assert.equal(called, false);
+  assert.equal(client.pending, true, 'old cleanup cannot clear the new request');
+  client._dispatch({ cmd: Command.GET_PASSWORD_FOR_LOGIN_NAME, payload: 'new-result' }, replacement);
+  assert.equal((await fresh).payload, 'new-result');
+  assert.equal(client.pending, false);
+  assert.doesNotMatch(JSON.stringify(client.getDiagnostics()), /old-secret|new-result/);
+});
+
+test('reset during save encryption cannot send the abandoned save through a new session', async (t) => {
+  const { client, port } = unlockedClient(t);
+  const encryption = deferred();
+  client.session = { sharedKey: 'synthetic', username: 'old', encrypt: () => encryption.promise, serialize: (x) => x };
+  const save = assert.rejects(client.saveLogin(1, 'https://example.test', 'synthetic', 'synthetic'), /session changed/);
+  await Promise.resolve();
+  client.disconnect('request_cancelled');
+  const replacement = { sent: [], postMessage(m) { this.sent.push(m); }, disconnect() {} };
+  client.port = replacement;
+  client.session = { sharedKey: 'synthetic-new', username: 'new' };
+  client.state = State.Unlocked;
+  encryption.resolve('old-encrypted-save');
+  await save;
+  assert.equal(replacement.sent.length, 0);
+  assert.equal(port.sent.some((m) => m.cmd === Command.SET_PASSWORD_FOR_LOGIN_NAME_URL), false);
+});
+
 for (const cmd of [Command.GET_LOGIN_NAMES_FOR_URL, Command.GET_ONE_TIME_CODES]) {
   test(`slow metadata cmd ${cmd} preserves SRP and drains stale data before accepting another request`, async (t) => {
     const { client, port } = unlockedClient(t);
@@ -29,6 +85,7 @@ for (const cmd of [Command.GET_LOGIN_NAMES_FOR_URL, Command.GET_ONE_TIME_CODES])
     assert.equal(client.session, session);
     assert.equal(port.closed, false);
     assert.equal(client._waiters.get(cmd).draining, true);
+    assert.equal(client.pending, true, 'draining still waits even though the UI lookup returned');
     assert.equal(client.getDiagnostics().events.at(-1).reason, 'metadata_slow');
     // Both same-command retries and different commands are held off. No late
     // reply can be confused with a new account's query or cause an extra Touch ID.
@@ -41,6 +98,7 @@ for (const cmd of [Command.GET_LOGIN_NAMES_FOR_URL, Command.GET_ONE_TIME_CODES])
     t.mock.timers.tick(10_000);
     client._dispatch({ cmd, payload: 'stale-sensitive-metadata' }, port);
     assert.equal(client._waiters.size, 0);
+    assert.equal(client.pending, false);
     assert.equal(client.getDiagnostics().events.at(-1).reason, 'metadata_drained');
     t.mock.timers.tick(30_000);
     assert.equal(client.ready, true, 'draining cancels the hard deadline');

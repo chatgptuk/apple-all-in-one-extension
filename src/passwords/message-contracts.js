@@ -35,7 +35,7 @@ export function validPasswordRequest(input) {
       return text(m.host, 253) && !!m.host && (p.suggestions === 'automatic' || p.suggestions === 'manual') && typeof p.privateSignup === 'boolean' && (p.allowHttp === undefined || typeof p.allowHttp === 'boolean');
     }
     case 'inlineLogins': case 'inlineOtpItems': case 'getLogins': case 'getOtpItems':
-    case 'getState': case 'connect': case 'requestChallenge': case 'refreshAndRefill':
+    case 'getState': case 'connect': case 'resetConnection': case 'requestChallenge': case 'refreshAndRefill':
     case 'clearCache': case 'getSitePreferences': case 'getDiagnostics': return true;
     default: return false;
   }
@@ -87,7 +87,7 @@ export function failureMessage(reason, chinese = false) {
     unsupported_page: ['Apple Passwords cannot query this page. Open an HTTP or HTTPS website and retry; the existing session is unchanged.', '此页面不支持查询 Apple 密码。请打开 HTTP 或 HTTPS 网站后重试；现有会话不会被重置。'],
     native_disconnected: ['The Apple Passwords helper exited unexpectedly and its session was lost. Reconnect and unlock again; copy diagnostics if this recurs.', 'Apple 密码辅助程序意外退出，原会话已丢失。请重新连接并解锁；如反复出现，请复制诊断报告。'],
     native_timeout: ['Apple Passwords did not respond in time. Check the system authorization prompt, then retry.', 'Apple 密码响应超时，请检查系统授权窗口后重试。'],
-    native_busy: ['Apple Passwords is handling another request. Finish it, then retry.', 'Apple 密码正在处理另一项请求，请先完成该操作再重试。'],
+    native_busy: ['Still waiting for Apple Passwords to finish an earlier request. Retry shortly, or end the wait from the extension popup.', '仍在等待 Apple 密码结束上一次请求。请稍后重试，也可在扩展弹窗中结束等待。'],
     authorization_cancelled: ['System authorization was not completed. Retry when you are ready.', '系统授权未完成，准备好后可以重试。'],
     ambiguous_account: ['More than one saved item matches this account. Review its website entries in Apple Passwords before filling.', '此账号匹配到多个不同的保存项目，请先在 Apple 密码中确认网站对应的记录。'],
     invalid_request: ['This page is using an older extension interface. Refresh the page and try again.', '当前页面使用的扩展接口已过期或不受支持，请刷新网页后重试。'],

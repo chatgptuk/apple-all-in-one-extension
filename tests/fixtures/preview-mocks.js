@@ -145,6 +145,14 @@
   let nativeChallengeAttempts = 0;
   let nativeLookupAttempts = 0;
   let hasNativeChallenge = false;
+  let nativePending = params.get('nativeBusy') === '1';
+  if (nativePending) document.addEventListener('DOMContentLoaded', () => {
+    const finish = document.createElement('button');
+    finish.textContent = 'Finish previous synthetic request';
+    finish.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:9999;padding:10px';
+    finish.onclick = () => { nativePending = false; finish.remove(); };
+    document.body.append(finish);
+  });
   const snapshot = () => ({
     emails,
     forwardTo: 'synthetic@example.test',
@@ -179,7 +187,7 @@
       id: 'qa-extension',
       lastError: undefined,
       onMessage: runtimeMessages,
-      getManifest: () => ({ version: '1.3.12' }),
+      getManifest: () => ({ version: '1.3.13' }),
       getURL: (value) => new URL(value, location.origin).href,
       openOptionsPage: (cb) => respond(undefined, cb),
       sendMessage(message, cb) {
@@ -187,11 +195,19 @@
         if (message.type === 'getLogins' || message.type === 'getOtpItems') passwordQueryReads++;
         if (['fillOnPage', 'fillOtpOnPage', 'getOtpForLoginDetails'].includes(message.type)) secretReads++;
         if (message.type === 'getState')
-          result = { ok: true, state: nativeState, hasChallenge: hasNativeChallenge };
+          result = { ok: true, state: nativeState, hasChallenge: hasNativeChallenge, nativePending };
+        if (message.type === 'resetConnection') {
+          nativePending = false;
+          nativeState = 'disconnected';
+          hasNativeChallenge = false;
+          runtimeMessages.emit({ type: 'state', state: nativeState });
+          result = { ok: true, state: nativeState };
+        }
         if (message.type === 'connect') {
           nativeConnectAttempts++;
           document.documentElement.dataset.nativeConnectAttempts = String(nativeConnectAttempts);
           if (recoveryMode && recoveryMode !== 'persistent' && nativeConnectAttempts > 1) nativeState = 'needs_pin';
+          if (params.get('nativeBusy') === '1' && nativeState === 'disconnected') nativeState = 'needs_pin';
           result = { ok: nativeState === 'unlocked' || nativeState === 'needs_pin', state: nativeState, hasChallenge: hasNativeChallenge };
         }
         if (message.type === 'requestChallenge') {
@@ -249,6 +265,8 @@
             ok: true,
             items: [{ username: 'Admin', domain: 'example.test' }],
           };
+        if (message.type === 'getLogins' && nativePending)
+          result = { ok: false, reason: 'native_busy' };
         if (message.type === 'getLogins' && params.get('nativeSlow') === '1') {
           nativeLookupAttempts++;
           if (nativeLookupAttempts === 1)

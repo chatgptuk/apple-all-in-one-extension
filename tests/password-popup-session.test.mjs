@@ -35,10 +35,12 @@ function mountPasswords(respond) {
     getActiveTabForPopup: async () => ({ id: 1, url: 'https://example.test/login' }),
     browser: { runtime: { onMessage: { addListener: (fn) => listeners.add(fn), removeListener: (fn) => listeners.delete(fn) } } },
     tr: (en) => en, URL, console,
+    fillFailureGuidance: (reason) => `guidance:${reason}`,
+    window: { setTimeout, clearTimeout },
   });
   vm.runInContext(ts.transpileModule(`${source.slice(start, end)}
     return { state, hasChallenge, error, logins, otps, siteItemsLoading, otpItemsLoading,
-      loadSiteItems, verify, requestAccessCode };
+      waitingForNative, loadSiteItems, verify, requestAccessCode, endNativeWait, fillAndShowLogin };
   }; globalThis.PasswordsView = PasswordsView;`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText, context);
@@ -56,6 +58,112 @@ function mountPasswords(respond) {
     lateWrites: () => lateWrites,
   };
 }
+
+test('busy metadata recovers when the prior request ends without another fill or authorization', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let pending = true, lookups = 0;
+  const h = mountPasswords(async ({ type }) => {
+    if (type === 'getState') return { state: 'unlocked', nativePending: pending };
+    if (type === 'getLogins') return ++lookups === 1
+      ? { ok: false, reason: 'native_busy' }
+      : { ok: true, logins: [{ username: 'synthetic' }] };
+    if (type === 'getOtpItems') return { ok: true, items: [] };
+    throw new Error(`unexpected ${type}`);
+  });
+  await h.flush();
+  assert.equal(h.ui.waitingForNative, true);
+  t.mock.timers.tick(1000);
+  await h.flush();
+  assert.equal(lookups, 1, 'poll only status while native work is pending');
+  pending = false;
+  t.mock.timers.tick(1000);
+  await h.flush();
+  assert.equal(h.ui.waitingForNative, false);
+  assert.equal(h.ui.error, undefined);
+  assert.equal(h.ui.logins[0].username, 'synthetic');
+  assert.equal(lookups, 2);
+  t.mock.timers.tick(10_000);
+  await h.flush();
+  assert.equal(lookups, 2, 'stop polling after recovery');
+  assert.equal(h.calls.some((type) => ['connect', 'requestChallenge', 'fillOnPage', 'fillOtpOnPage'].includes(type)), false);
+  h.unmount();
+});
+
+test('native timeout clears the stale busy screen and waits for explicit unlock', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let state = 'unlocked';
+  const h = mountPasswords(async ({ type }) => {
+    if (type === 'getState') return { state, nativePending: state === 'unlocked' };
+    if (type === 'getLogins') return { ok: false, reason: 'native_timeout' };
+    throw new Error(`unexpected ${type}`);
+  });
+  await h.flush();
+  state = 'disconnected';
+  t.mock.timers.tick(1000);
+  await h.flush();
+  assert.equal(h.ui.state, 'disconnected');
+  assert.equal(h.ui.waitingForNative, false);
+  assert.equal(h.ui.error, undefined);
+  assert.equal(h.calls.includes('connect'), false);
+  h.unmount();
+});
+
+test('manual end-wait resets before reconnecting and never replays the abandoned fill', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = mountPasswords(async ({ type }) => {
+    if (type === 'getState') return { state: 'unlocked', nativePending: true };
+    if (type === 'getLogins') return { ok: false, reason: 'native_busy' };
+    if (type === 'resetConnection') return { ok: true, state: 'disconnected' };
+    if (type === 'connect' || type === 'requestChallenge') return { ok: true, state: 'needs_pin', hasChallenge: true };
+    throw new Error(`unexpected ${type}`);
+  });
+  await h.flush();
+  await h.ui.endNativeWait();
+  await h.flush();
+  assert.deepEqual(h.calls.slice(-3), ['resetConnection', 'connect', 'requestChallenge']);
+  assert.equal(h.ui.state, 'needs_pin');
+  assert.equal(h.ui.waitingForNative, false);
+  assert.equal(h.ui.error, undefined);
+  h.unmount();
+});
+
+test('closing the popup stops a pending busy-state poll before any recovery', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const read = deferred();
+  let reads = 0;
+  const h = mountPasswords(async ({ type }) => {
+    if (type === 'getState') return ++reads === 1 ? { state: 'unlocked' } : read.promise;
+    if (type === 'getLogins') return { ok: false, reason: 'native_busy' };
+    throw new Error(`unexpected ${type}`);
+  });
+  await h.flush();
+  t.mock.timers.tick(1000);
+  h.unmount();
+  read.resolve({ state: 'unlocked', nativePending: false });
+  await h.flush();
+  t.mock.timers.tick(10_000);
+  assert.equal(reads, 2);
+  assert.equal(h.lateWrites(), 0);
+  assert.equal(h.calls.filter((type) => type === 'getLogins').length, 1);
+});
+
+test('closing during manual reset cannot launch a new authorization later', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const reset = deferred();
+  const h = mountPasswords(async ({ type }) => {
+    if (type === 'getState') return { state: 'unlocked', nativePending: true };
+    if (type === 'getLogins') return { ok: false, reason: 'native_busy' };
+    if (type === 'resetConnection') return reset.promise;
+    throw new Error(`unexpected ${type}`);
+  });
+  await h.flush();
+  const ending = h.ui.endNativeWait();
+  h.unmount();
+  reset.resolve({ ok: true, state: 'disconnected' });
+  await ending;
+  assert.equal(h.calls.includes('connect'), false);
+  assert.equal(h.lateWrites(), 0);
+});
 
 test('unlock broadcast and PIN response share one login/OTP lookup', async () => {
   const login = deferred();
