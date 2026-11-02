@@ -14,6 +14,7 @@ The focused suite executes real production functions/modules against synthetic D
 - Password-only forms with an empty saved username: `current-password` overrides generic token/code hints, native selection retains the empty account, cached credentials still expire, and ambiguous unnamed secrets are rejected.
 - Active idle/hard expiry and bounded LRU credential retention; memory-only pending-save expiry, safe retries and metadata-only notifications.
 - Install/update-only migration recovery with bounded tab/frame injection, rather than all-tab work at every service-worker wake.
+- Temporary 2FA: all RFC 6238 Appendix B vectors, Base32 validation, custom setup-link parameters, real-time rollover/clock jumps, fresh clipboard codes, and stale async results after clear/replacement/disposal.
 - Native timeouts, late replies, disconnect cleanup and optional save acknowledgments.
 - Cancelled/ignored native requests: busy-state recovery, popup-only reset, stale-reply isolation, queued-work invalidation and no delayed authorization after closing the popup.
 - Closing a signup chooser during address creation and restoring controls after failures.
@@ -35,6 +36,8 @@ For visual QA, run `node tests/preview-server.mjs`, then open these URLs in the 
 - Add `?nativeBusy=1&lang=zh-CN` to the popup preview: finish the synthetic request to verify automatic list recovery, or use **End Wait and Reconnect** to verify the fresh unlock flow. Neither action reads a real secret.
 - Add `?appearance=light` or `?appearance=dark&lang=zh-CN` to popup/settings previews to inspect both appearances and languages. Production pages follow the system appearance; these query overrides exist only in the preview fixture.
 - `http://127.0.0.1:4179/icons-preview.html`: the shared original vector catalog at 18 and 32 points. Main UI and isolated inline UI must use the same paths; site favicons remain unchanged.
+
+Temporary 2FA smoke check: expand the tool at the top of Passwords, paste the public test key `JBSWY3DPEHPK3PXP`, verify countdown/rollover and copying, then clear/collapse/switch sections/reload and confirm the key is gone. Also check it while the Apple helper is unavailable using `?nativeRecovery=persistent`. Do not use a real account key in preview fixtures.
 
 Visual smoke check: switch sections; expand/collapse password and OTP details; show the language menu; edit alias metadata; scroll the details; focus controls with the keyboard; check the narrow inline chooser and settings switches. Glass belongs to navigation and controls; content cards must remain readable without transparency. The shared `src/styles/apple-design.css` also handles reduced transparency, higher contrast, reduced motion and forced colors.
 

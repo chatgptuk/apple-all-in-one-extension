@@ -11,7 +11,7 @@ An independent, open-source Chromium extension that brings Apple Passwords, pass
 
 This project is not endorsed by, sponsored by, authorized by, or affiliated with Apple Inc. Apple, iCloud, iCloud+, Apple Passwords, and related names are Apple trademarks used here only to describe compatibility and the services being accessed.
 
-**Current version:** 1.3.13<br>
+**Current version:** 1.3.14<br>
 **Repository:** https://github.com/chatgptuk/apple-all-in-one-extension
 
 ## Who this project is for
@@ -29,6 +29,8 @@ It is not currently suitable for Chrome Web Store submission, managed enterprise
 ## Features
 
 ### Apple Passwords
+
+**Temporary 2FA** is available at the top of Passwords, including while Apple Passwords is locked. Paste a Base32 setup key for a six-digit code refreshed every 30 seconds, or a supported `otpauth://totp` setup link to use its algorithm, digit count and period. Copy the current code or clear the key. Keys are calculated locally in the popup: never stored, sent to the background, or uploaded. Collapsing the tool, switching away from Passwords, or closing the popup discards the temporary session. Clipboard contents are only changed by Copy Code.
 
 If an earlier request still appears busy after you cancel or dismiss authorization, the popup now checks its status and refreshes the saved-item list when the request ends. **End Wait and Reconnect** abandons the old connection and starts a fresh unlock; it never replays the previous fill. Password/code reads still time out after 60 seconds. The busy message describes a pending response rather than claiming a system authorization window is open.
 

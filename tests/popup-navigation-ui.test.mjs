@@ -90,7 +90,7 @@ function mountPopup(options = {}) {
     DEFAULT_STORE: { autoHmeReconnect: false }, IS_MANAGER: options.manager ?? false,
     tr: (en) => en, cx: (...classes) => classes.filter(Boolean).join(' '), console,
     Header: 'Header', AppSegmentedControl: 'AppSegmentedControl', HmeSegmentedControl: 'HmeSegmentedControl',
-    PasswordsView: 'PasswordsView', GenerateView: 'GenerateView', ManageView: 'ManageView',
+    TemporaryTotp: 'TemporaryTotp', PasswordsView: 'PasswordsView', GenerateView: 'GenerateView', ManageView: 'ManageView',
     DetailsView: 'DetailsView', SignInView: 'SignInView', SiteTools: 'SiteTools',
     Spinner: 'Spinner', ErrorBanner: 'ErrorBanner',
   });

@@ -42,6 +42,7 @@ import { DEFAULT_MANAGER_VIEW, sanitizeManagerView, selectManagedAddresses, addr
 import { canRetryPasswordRequest } from './password-requests';
 import { usePopupNavigation } from './usePopupNavigation';
 import { restoreHmeDetail } from './restore-hme-detail';
+import TemporaryTotp from './TemporaryTotp';
 
 const IS_MANAGER = new URLSearchParams(window.location.search).get('manager') === '1';
 // Keep an in-progress query while opening details, but never persist it to disk.
@@ -2934,6 +2935,7 @@ const Popup = () => {
       )}
 
       <main className="hme-content unified-content">
+        {appSection === 'passwords' && <TemporaryTotp />}
         {appSection === 'passwords' && <PasswordsView />}
 
         {appSection === 'hide-email' && hmeLoading && (

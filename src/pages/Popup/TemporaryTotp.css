@@ -1,0 +1,46 @@
+.temporary-totp {
+  margin: 16px 18px 0;
+  border: 1px solid var(--apple-separator);
+  border-radius: 18px;
+  background: var(--apple-surface);
+  overflow: hidden;
+}
+.temporary-totp-toggle {
+  width: 100%; min-height: 66px; padding: 12px 14px; border: 0;
+  display: flex; align-items: center; gap: 11px;
+  color: var(--apple-label); background: transparent; text-align: left;
+}
+.temporary-totp-toggle:active { background: var(--apple-fill); }
+.temporary-totp-icon {
+  width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto;
+  border-radius: 11px; color: var(--apple-blue); background: var(--apple-inset);
+}
+.temporary-totp-toggle > span:nth-child(2) { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 4px; }
+.temporary-totp-toggle strong { font-size: 13px; font-weight: 600; }
+.temporary-totp-toggle small { font-size: 11px; line-height: 1.4; color: var(--apple-secondary); }
+.temporary-totp-toggle > svg { color: var(--apple-tertiary); transition: transform 150ms ease; }
+.temporary-totp-toggle > svg.is-expanded { transform: rotate(90deg); }
+.temporary-totp-body { border-top: 1px solid var(--apple-separator); padding: 16px; }
+.temporary-totp-body > label { display: flex; align-items: baseline; gap: 7px; margin-bottom: 8px; font-size: 12px; font-weight: 600; }
+.temporary-totp-body > label span { font-size: 10px; font-weight: 400; color: var(--apple-secondary); }
+.temporary-totp-input { display: flex; align-items: center; border: 1px solid var(--apple-separator); border-radius: 10px; background: var(--apple-inset); }
+.temporary-totp-input:focus-within { outline: 2px solid var(--apple-blue); outline-offset: 2px; }
+.temporary-totp-input input { min-width: 0; width: 100%; height: 44px; padding: 0 12px; border: 0; outline: 0; background: transparent; color: var(--apple-label); font: 13px/1.5 ui-monospace, monospace; }
+.temporary-totp-input input::placeholder { font-family: system-ui, sans-serif; color: var(--apple-secondary); }
+.temporary-totp-input button { display: grid; place-items: center; width: 44px; height: 44px; flex-shrink: 0; border: 0; border-radius: 10px; color: var(--apple-blue); background: transparent; }
+.temporary-totp-result { margin: 16px 0; padding: 16px; border-radius: 12px; background: var(--apple-inset); text-align: center; }
+.temporary-totp-caption { font-size: 11px; color: var(--apple-secondary); }
+.temporary-totp-result output { display: block; margin: 10px 0 14px; color: var(--apple-label); font: 600 32px/1.2 ui-monospace, monospace; font-variant-numeric: tabular-nums; letter-spacing: .025em; user-select: text; }
+.temporary-totp-time { display: flex; align-items: center; justify-content: center; gap: 10px; }
+.temporary-totp-time progress { width: 76px; height: 4px; border: 0; border-radius: 4px; overflow: hidden; accent-color: var(--apple-blue); }
+.temporary-totp-time progress::-webkit-progress-bar { background: var(--apple-fill); }
+.temporary-totp-time progress::-webkit-progress-value { background: var(--apple-blue); }
+.temporary-totp-time span { min-width: 91px; color: var(--apple-secondary); font-size: 11px; text-align: left; font-variant-numeric: tabular-nums; }
+.temporary-totp-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.temporary-totp-actions button { min-height: 44px; }
+.temporary-totp-actions .hme-primary-button { padding: 0 18px; width: auto; }
+.temporary-totp-privacy { margin: 12px 0 0; color: var(--apple-secondary); font-size: 11px; line-height: 1.6; }
+.temporary-totp-error { margin: 0 0 12px; color: var(--hme-red); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.temporary-totp-actions + .temporary-totp-error { margin: 12px 0 0; }
+@media (prefers-reduced-motion: reduce) { .temporary-totp-toggle > svg { transition: none; } }
+@media (forced-colors: active) { .temporary-totp, .temporary-totp-input, .temporary-totp-result { border: 1px solid CanvasText; } }
